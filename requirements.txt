@@ -1,0 +1,9 @@
+# Core dependency — all other imports are stdlib
+psycopg2-binary>=2.9.0
+
+# Phase 4 (ML) — uncomment when needed
+# numpy>=1.24
+# pandas>=2.0
+# scikit-learn>=1.3
+# xgboost>=2.0
+# lightgbm>=4.0

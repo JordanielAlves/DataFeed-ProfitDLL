@@ -1,0 +1,71 @@
+# ============================================================
+# Análise de Fluxo — .gitignore
+# ============================================================
+
+# --- Credenciais e config local ---
+config.py           # contém senha do banco e caminhos locais — NUNCA commitar
+
+# --- ProfitDLL (proprietária — obter na Nelogica) ---
+ProfitDLL/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+wheels/
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+.eggs/
+lib/
+lib64/
+
+# --- Ambientes virtuais ---
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# --- IDEs ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Artefatos de ML (Fase 4) ---
+models/
+*.pkl
+*.joblib
+*.h5
+*.onnx
+
+# --- Jupyter (notebooks da Fase 4) ---
+.ipynb_checkpoints/
+*.ipynb
+
+# --- Saída de testes ---
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# --- Dumps do banco (contêm dados sensíveis) ---
+*.sql.gz
+*.dump
+*.backup
