@@ -37,8 +37,8 @@ CREATE TABLE IF NOT EXISTS trades (
     volume          NUMERIC(20,2),
     buy_agent       INTEGER,                     -- ID numérico da corretora compradora
     sell_agent      INTEGER,                     -- ID numérico da corretora vendedora
-    trade_type      SMALLINT    NOT NULL DEFAULT 0,
-    -- trade_type: 0=cross, 1=comprador agrediu (buy aggression), 2=vendedor agrediu
+    trade_type      SMALLINT    NOT NULL DEFAULT 1,
+    -- trade_type: 1=cross, 2=comprador agrediu (buy aggression), 3=vendedor agrediu (sell aggression), 4=leilão
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -183,3 +183,15 @@ SELECT
 FROM icebergs i
 WHERE i.last_seen > NOW() - INTERVAL '2 hours'
 ORDER BY i.renewals DESC, i.total_qty DESC;
+
+-- ---------------------------------------------------------------------------
+-- Dados EOD (End of Day) para cálculo de volatilidade adaptativa
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS daily_ohlc (
+    date        DATE PRIMARY KEY,
+    ticker      VARCHAR(20) NOT NULL,
+    open_p      NUMERIC(12,2),
+    high_p      NUMERIC(12,2),
+    low_p       NUMERIC(12,2),
+    close_p     NUMERIC(12,2)
+);

@@ -32,14 +32,25 @@ DLL_PATH = os.path.join(
 )
 
 # ---------------------------------------------------------------------------
+# Credenciais da Nelogica (ProfitDLL)
+# ---------------------------------------------------------------------------
+PROFIT = {
+    "key":      os.getenv("PROFIT_KEY",      "1788578460549219652"),
+    "user":     os.getenv("PROFIT_USER",     "72784695115"),
+    "password": os.getenv("PROFIT_PASSWORD", "Hkeycode#$%1010"),
+}
+
+# ---------------------------------------------------------------------------
 # Ativos monitorados
 # ticker: código do ativo | exchange: "F" = BMF/Futuros
 # Ajuste o vencimento conforme o contrato ativo
 # ---------------------------------------------------------------------------
 ASSETS = [
-    {"ticker": "WDOK25",  "exchange": "F"},   # Mini Dólar
-    {"ticker": "DOLK25",  "exchange": "F"},   # Dólar Cheio
-    {"ticker": "DOLPRO",  "exchange": "F"},   # DolPro agregado
+    # Contratos vigentes:
+    {"ticker": "WDOU26",  "exchange": "F"},   # Mini Dólar — Vencimento Setembro/26
+    {"ticker": "WINV26",  "exchange": "F"},   # Mini Índice — Vencimento Outubro/26
+    {"ticker": "DI1F27",  "exchange": "F"},   # Juros Futuros Jan/2027 (Contexto Macro Doméstico)
+    {"ticker": "DI1F29",  "exchange": "F"},   # Juros Futuros Jan/2029 (Contexto Macro Doméstico)
 ]
 
 # ---------------------------------------------------------------------------
@@ -62,6 +73,21 @@ KNOWN_AGENTS = {
 
 # Agentes classificados como varejo (sinal contrário)
 RETAIL_AGENTS: set = set()   # preencher após identificar os IDs
+
+# ---------------------------------------------------------------------------
+# Fator de escala de preço por prefixo de ativo
+# A ProfitDLL Nelogica retorna o preço do WIN/IND em "ticks" onde
+# cada tick = 5 pontos de Ibovespa — NÃO em pontos reais do índice.
+# Ex: DLL retorna 35.584 → preço real no mercado = 177.920 pts (× 5).
+# WDO/DOL não têm esse problema (fator = 1).
+# DOLPRO e outros sintéticos também devem ser validados na primeira sessão.
+# ---------------------------------------------------------------------------
+PRICE_SCALE_BY_PREFIX: dict = {
+    "WIN": 5,    # Mini Índice — DLL retorna preço/5 (ticks de 5 pts de Ibovespa)
+    "IND": 5,    # Índice cheio — mesmo comportamento esperado
+    "WDO": 1,    # Mini Dólar — sem escala (ex: 50980.00)
+    "DOL": 0.2,  # Dólar cheio — DLL retorna 5x o mini (254950.00 → 50980.00)
+}
 
 # ---------------------------------------------------------------------------
 # Parâmetros de gravação

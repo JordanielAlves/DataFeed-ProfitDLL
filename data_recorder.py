@@ -137,7 +137,7 @@ class DataRecorder:
         last_flush = time.time()
 
         while True:
-            # Drenar a fila com timeout
+            # Drenar a fila com timeout no primeiro item
             try:
                 evt_type, evt = self._queue.get(timeout=RECORDER["flush_interval_sec"])
             except Empty:
@@ -150,6 +150,23 @@ class DataRecorder:
                 self._buffer_trade(evt)
             elif evt_type == _EVT_BOOK and evt:
                 self._buffer_book(evt)
+
+            # Drenar itens adicionais já disponíveis na fila em lote (batch draining)
+            while (
+                len(self._trade_buffer) < RECORDER["trade_batch_size"]
+                and len(self._book_buffer) < RECORDER["book_batch_size"]
+            ):
+                try:
+                    next_type, next_evt = self._queue.get_nowait()
+                    if next_type == _EVT_STOP:
+                        self._queue.put((_EVT_STOP, None))
+                        break
+                    elif next_type == _EVT_TRADE and next_evt:
+                        self._buffer_trade(next_evt)
+                    elif next_type == _EVT_BOOK and next_evt:
+                        self._buffer_book(next_evt)
+                except Empty:
+                    break
 
             # Flush por tamanho de batch
             now = time.time()
@@ -177,7 +194,7 @@ class DataRecorder:
     # ------------------------------------------------------------------
 
     def _buffer_trade(self, event: TradeEvent):
-        session_id = self._sessions.get(event.ticker)
+        session_id = self._get_or_create_session(event.ticker)
         self._trade_buffer.append({
             "session_id":    session_id,
             "ticker":        event.ticker,
@@ -220,7 +237,7 @@ class DataRecorder:
         self._stats["trades"] += 1
 
     def _buffer_book(self, event: BookEvent):
-        session_id = self._sessions.get(event.ticker)
+        session_id = self._get_or_create_session(event.ticker)
         self._book_buffer.append({
             "session_id": session_id,
             "ticker":     event.ticker,
@@ -297,7 +314,6 @@ class DataRecorder:
                 c["buy_volume"], c["sell_volume"],
                 c["cross_qty"],
             ))
-            c["dirty"] = False
 
         try:
             with psycopg2.connect(DB_DSN) as conn:
@@ -306,7 +322,7 @@ class DataRecorder:
                         INSERT INTO agent_daily
                             (date, ticker, agent_id,
                              buy_qty, sell_qty, buy_trades, sell_trades,
-                             buy_volume, sell_volume, cross_qty, updated_at)
+                             buy_volume, sell_volume, cross_qty)
                         VALUES %s
                         ON CONFLICT (date, ticker, agent_id) DO UPDATE SET
                             buy_qty     = agent_daily.buy_qty     + EXCLUDED.buy_qty,
@@ -319,6 +335,17 @@ class DataRecorder:
                             updated_at  = NOW()
                     """, rows)
                 conn.commit()
+
+            # Zerar contadores incrementais no cache em memória após commit bem-sucedido
+            for (dt, ticker, agent_id), c in dirty.items():
+                c["buy_qty"] = 0
+                c["sell_qty"] = 0
+                c["buy_trades"] = 0
+                c["sell_trades"] = 0
+                c["buy_volume"] = 0.0
+                c["sell_volume"] = 0.0
+                c["cross_qty"] = 0
+                c["dirty"] = False
         except Exception as e:
             log.error(f"Erro no flush de agentes: {e}")
 
@@ -367,6 +394,29 @@ class DataRecorder:
                 conn.commit()
         except Exception as e:
             log.error(f"Erro ao abrir sessões: {e}")
+
+    def _get_or_create_session(self, ticker: str) -> Optional[int]:
+        if ticker in self._sessions:
+            return self._sessions[ticker]
+        today = date.today()
+        try:
+            with psycopg2.connect(DB_DSN) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO sessions (date, ticker, started_at)
+                        VALUES (%s, %s, NOW())
+                        ON CONFLICT (date, ticker) DO UPDATE
+                            SET started_at = NOW(), ended_at = NULL
+                        RETURNING id
+                    """, (today, ticker))
+                    session_id = cur.fetchone()[0]
+                    self._sessions[ticker] = session_id
+                    log.info(f"Sessão aberta sob demanda: {ticker} → session_id={session_id}")
+                conn.commit()
+            return session_id
+        except Exception as e:
+            log.error(f"Erro ao abrir sessão sob demanda para {ticker}: {e}")
+            return None
 
     def _close_sessions(self):
         if not self._sessions:

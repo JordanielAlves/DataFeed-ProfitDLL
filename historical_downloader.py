@@ -433,9 +433,14 @@ def main():
         print(f"DLL não encontrada: {DLL_PATH}")
         return
 
-    key      = input("Chave de acesso: ").strip()
-    user     = input("Usuário: ").strip()
-    password = getpass.getpass("Senha: ")
+    try:
+        from config import PROFIT as cfg_profit
+    except (ImportError, AttributeError):
+        cfg_profit = {}
+
+    key      = os.getenv("PROFIT_KEY")      or cfg_profit.get("key")      or input("Chave de acesso: ").strip()
+    user     = os.getenv("PROFIT_USER")     or cfg_profit.get("user")     or input("Usuário: ").strip()
+    password = os.getenv("PROFIT_PASSWORD") or cfg_profit.get("password") or getpass.getpass("Senha: ")
 
     bridge = ProfitBridge(DLL_PATH)
     bridge.on_connected = lambda ok: log.info(

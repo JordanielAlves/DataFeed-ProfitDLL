@@ -1,0 +1,624 @@
+"""
+ml_live_predictor.py
+Módulo Preditivo de Microestrutura em Tempo Real (Live Predictor) — ProfitDLL
+Monitora continuamente os dados recebidos pelo DataRecorder (PostgreSQL) durante o pregão aberto,
+calcula métricas instantâneas de absorção/exaustão/CVD de Big Players e emite alertas visuais no terminal,
+além de salvar os sinais quantitativos na tabela `signals` para validação e backtest.
+
+Uso CLI:
+    python ml_live_predictor.py --ticker WDOQ26 --interval 10 --window 5
+    python ml_live_predictor.py --ticker WINQ26 --interval 15 --window 5
+"""
+
+import os
+import sys
+import time
+import json
+import pickle
+import argparse
+import logging
+import warnings
+import pandas as pd
+from datetime import datetime, timedelta
+import psycopg2
+from psycopg2.extras import RealDictCursor
+try:
+    from dynamic_harmonics import get_daily_harmonic_step, get_closest_harmonic_distance
+except ImportError:
+    get_daily_harmonic_step = None
+    get_closest_harmonic_distance = None
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+try:
+    from config import DB_DSN
+except ImportError:
+    DB_DSN = "host=localhost port=5432 dbname=fluxo_ordens user=postgres password=postgres"
+
+from global_context import get_global_context
+from domestic_context import get_domestic_context
+
+try:
+    from corretoras import get_nome_corretora, get_corretora_label
+except ImportError:
+    get_nome_corretora = lambda x: str(x)
+    get_corretora_label = lambda x: f"Corretora {x}"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] live_ml — %(message)s",
+    datefmt="%H:%M:%S"
+)
+log = logging.getLogger("live_ml")
+
+# ---------------------------------------------------------------------------
+# Constantes de horário do pregão (ajustar aqui se a B3 mudar os horários)
+# Referência vigente 2026:
+#   WDO/DOL: 9h00 - 18h00 (horário de Brasília)
+#   WIN/IND: 9h00 - 17h55
+#   PTAX BCB: 4 janelas de consulta — a mais relevante operacionalmente é a
+#             última janela do dia (13h00-13h10), após a qual a taxa é divulgada
+#             por volta de 13h30. Usamos 13h00 como referência da janela-alvo.
+# ---------------------------------------------------------------------------
+_MARKET_OPEN_HOUR   = 9    # Abertura do pregão (hora local, BRT)
+_MARKET_OPEN_MIN    = 0
+_MARKET_CLOSE_HOUR  = 18   # Fechamento padrão WDO (hora local, BRT)
+_MARKET_CLOSE_MIN   = 0
+_PTAX_WINDOW_HOUR   = 13   # Início da última janela PTAX do BCB (hora local, BRT)
+_PTAX_WINDOW_MIN    = 0
+
+
+def calcular_features_temporais(ts: datetime) -> dict:
+    """
+    Calcula features de sazonalidade intradiária a partir de um timestamp.
+
+    Retorna um dict com:
+      - hour               : hora do dia (0-23)
+      - minute             : minuto da hora (0-59)
+      - minutes_since_open : minutos desde a abertura do pregão (9h00)
+                             negativo se o sinal ocorreu antes da abertura
+      - minutes_to_ptax    : minutos até o início da última janela PTAX (13h00)
+                             negativo se a janela já passou naquele dia
+      - minutes_to_close   : minutos até o fechamento do pregão (18h00)
+                             negativo se já passamos do fechamento
+
+    Esta função é pura (sem efeitos colaterais) e pode ser reutilizada em
+    ml_behavior_analyzer.py para enriquecer o dataset histórico.
+    """
+    # Âncoras do dia no mesmo fuso que o timestamp recebido
+    open_dt  = ts.replace(hour=_MARKET_OPEN_HOUR,  minute=_MARKET_OPEN_MIN,  second=0, microsecond=0)
+    close_dt = ts.replace(hour=_MARKET_CLOSE_HOUR, minute=_MARKET_CLOSE_MIN, second=0, microsecond=0)
+    ptax_dt  = ts.replace(hour=_PTAX_WINDOW_HOUR,  minute=_PTAX_WINDOW_MIN,  second=0, microsecond=0)
+
+    minutes_since_open = int((ts - open_dt).total_seconds() / 60)
+    minutes_to_ptax    = int((ptax_dt - ts).total_seconds() / 60)
+    minutes_to_close   = int((close_dt - ts).total_seconds() / 60)
+
+    return {
+        "hour":               ts.hour,
+        "minute":             ts.minute,
+        "minutes_since_open": minutes_since_open,
+        "minutes_to_ptax":    minutes_to_ptax,
+        "minutes_to_close":   minutes_to_close,
+    }
+
+
+class MLLivePredictor:
+    """Motor de monitoramento e emissão de alertas quantitativos em tempo real."""
+
+    def __init__(self, dsn: str = DB_DSN):
+        self.dsn = dsn
+        self.last_alert_time = {}
+        self.last_signal_hash = {}
+        self.armed_combo = {}
+        self.daily_open_price = {}
+        self.daily_harmonic_step = {}
+        self.ml_model = None
+        self.ml_scaler = None
+        self.ml_feature_names = []
+        self._load_ml_model()
+
+    def _get_daily_harmonic_step_cached(self, ticker: str, current_ts: datetime) -> float:
+        """Busca o step harmônico adaptativo em cache para o dia."""
+        if not get_daily_harmonic_step:
+            return 4.0
+            
+        date_str = current_ts.strftime('%Y-%m-%d')
+        cache_key = f"{ticker}_{date_str}"
+        if cache_key in self.daily_harmonic_step:
+            return self.daily_harmonic_step[cache_key]
+            
+        step = get_daily_harmonic_step(current_ts.date())
+        self.daily_harmonic_step[cache_key] = step
+        return step
+
+    def _get_daily_open(self, ticker: str, current_ts: datetime) -> float:
+        """Busca o preço de abertura oficial do dia no PostgreSQL para o Grid 8P Harmônico."""
+        date_str = current_ts.strftime('%Y-%m-%d')
+        cache_key = f"{ticker}_{date_str}"
+        if cache_key in self.daily_open_price:
+            return self.daily_open_price[cache_key]
+
+        try:
+            with psycopg2.connect(self.dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT price FROM trades WHERE ticker = %s AND ts >= %s::timestamp AND ts <= %s::timestamp ORDER BY ts ASC LIMIT 1",
+                                (ticker, f"{date_str} 00:00:00", f"{date_str} 23:59:59"))
+                    row = cur.fetchone()
+                    if row:
+                        scale = 10.0 if (ticker.startswith('WDO') or ticker.startswith('DOL')) else 1.0
+                        open_p = float(row[0]) / scale
+                        self.daily_open_price[cache_key] = open_p
+                        return open_p
+        except Exception:
+            pass
+        return None
+
+    def _load_ml_model(self):
+        """Carrega o modelo supervisionado (Pilar 2) gerado pelo ml_model_trainer.py para pontuação instantânea."""
+        models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+        pkl_path = os.path.join(models_dir, "quant_signals_v1.pkl")
+        if os.path.exists(pkl_path):
+            try:
+                with open(pkl_path, "rb") as f:
+                    payload = pickle.load(f)
+                self.ml_model = payload.get("model")
+                self.ml_scaler = payload.get("scaler")
+                self.ml_feature_names = payload.get("feature_names", [])
+                log.info(f"🤖 [PILAR 3 MLOps] Modelo quantitativo supervisionado carregado com sucesso ({len(self.ml_feature_names)} features)!")
+            except Exception as e:
+                log.warning(f"Erro ao carregar modelo ML em {pkl_path}: {e}")
+        else:
+            log.info("ℹ️ [PILAR 3 MLOps] Modelo supervisionado não encontrado em `models/quant_signals_v1.pkl`. Operando com heurística pura.")
+
+    def _predict_ml_conviction(self, signal_type: str, direction: int, cvd_b: float, cvd_v: float, delta_p: float, total_qty: float, dist_to_macro: float = None) -> float:
+        """
+        Transforma a microestrutura da janela atual no vetor canônico e consulta o classificador ML,
+        retornando o Score Preditivo de Convicção (0% a 100%) para ganho no scalper (+2.5 pts).
+        """
+        if not self.ml_model or not self.ml_feature_names:
+            return None
+
+        try:
+            row_dict = {
+                "direction": direction,
+                "cvd_big": cvd_b,
+                "cvd_varejo": cvd_v,
+                "delta_p": delta_p,
+                "total_qty": total_qty,
+                "dist_to_macro_harmonic": dist_to_macro if dist_to_macro is not None else 10.0
+            }
+            # Injetar features sazonais (Pilar 2.6 - Sazonalidade e Rolagem)
+            try:
+                from market_calendar import get_market_calendar_features
+                row_dict.update(get_market_calendar_features(datetime.now()))
+            except Exception:
+                pass
+
+            # Preencher as variáveis categóricas one-hot e demais ausentes
+            for fname in self.ml_feature_names:
+                if fname.startswith("sig__"):
+                    sig_name = fname.replace("sig__", "")
+                    row_dict[fname] = 1.0 if signal_type == sig_name else 0.0
+                elif fname not in row_dict:
+                    row_dict[fname] = 0.0
+
+            # Vetor X ordenado estritamente como no treino (usando DataFrame para preservar feature names e silenciar aviso do sklearn)
+            x_dict = {col: [row_dict.get(col, 0.0)] for col in self.ml_feature_names}
+            x_df = pd.DataFrame(x_dict)[self.ml_feature_names]
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                if self.ml_scaler:
+                    x_arr = self.ml_scaler.transform(x_df)
+                else:
+                    x_arr = x_df
+
+                # Probabilidade da classe 1 (sucesso/gain no scalper)
+                prob = self.ml_model.predict_proba(x_arr)[0][1]
+            return round(prob * 100, 1)
+        except Exception as e:
+            log.warning(f"Erro ao calcular Score ML ao vivo: {e}")
+            return None
+
+    @staticmethod
+    def print_powerline_alert(title: str, price_str: str, extra_str: str, direction: int, agents_str: str = "", details_list: list = None):
+        """
+        Imprime o alerta estilo Powerline / Badges (com setas Unicode ) de forma 100% nativa (<0,1ms),
+        respeitando a paleta simples escolhida: Verde para Compra (direction > 0) e Vermelho para Venda (direction < 0).
+        """
+        RESET = "\033[0m"
+        ARROW = ""
+
+        # Cores em RGB (TrueColor ANSI)
+        # Fita 1: Direção (Verde ou Vermelho)
+        if direction >= 1:
+            # Verde Institucional (#00A86B)
+            bg1, fg1_next = "\033[48;2;0;168;107m", "\033[38;2;0;168;107m"
+        else:
+            # Vermelho Institucional (#E53935)
+            bg1, fg1_next = "\033[48;2;229;57;53m", "\033[38;2;229;57;53m"
+
+        # Fita 2: Preço & Variação (Cinza Escuro #37474F)
+        bg2, fg2_next = "\033[48;2;55;71;79m", "\033[38;2;55;71;79m"
+
+        # Fita 3: Probabilidade ou Alvo (Azul Escuro #1A237E)
+        bg3, fg3_next = "\033[48;2;26;35;126m", "\033[38;2;26;35;126m"
+
+        # Linha principal em Badges Powerline
+        badge1 = f"{bg1}\033[1;38;2;255;255;255m  {title}  {RESET}"
+        arrow1 = f"{fg1_next}{bg2}{ARROW}{RESET}"
+        badge2 = f"{bg2}\033[1;38;2;255;255;255m  {price_str}  {RESET}"
+        arrow2 = f"{fg2_next}{bg3}{ARROW}{RESET}"
+        badge3 = f"{bg3}\033[1;38;2;255;255;255m  {extra_str}  {RESET}"
+        arrow3 = f"{fg3_next}\033[49m{ARROW}{RESET}"
+
+        print()
+        print(f"{badge1}{arrow1}{badge2}{arrow2}{badge3}{arrow3}")
+
+        # Linhas secundárias estilizadas como árvore limpa (├─ / └─)
+        if details_list:
+            for i, det in enumerate(details_list):
+                prefix = "  └─ " if i == len(details_list) - 1 and not agents_str else "  ├─ "
+                print(f"\033[1;38;2;200;200;200m{prefix}\033[0m{det}")
+
+        if agents_str:
+            print(f"\033[1;38;2;200;200;200m  └─ \033[1;38;2;255;215;0mTop Players no Dia:\033[0m {agents_str}")
+        print()
+
+    def get_latest_session_id(self, conn, ticker: str) -> int:
+        """Obtém o ID da sessão mais recente para o ativo."""
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM sessions WHERE ticker = %s ORDER BY started_at DESC LIMIT 1",
+                (ticker,)
+            )
+            res = cur.fetchone()
+            return res[0] if res else None
+
+    def analisar_janela_atual(self, ticker: str, window_minutes: int = 5, current_ts: datetime = None):
+        """
+        Calcula as métricas quantitativas nos últimos N minutos de pregão.
+        """
+        if current_ts is None:
+            current_ts = datetime.now()
+        query_trades = """
+            SELECT 
+                COUNT(*) AS n_trades,
+                SUM(qty) AS total_qty,
+                MIN(price) AS low_p,
+                MAX(price) AS high_p,
+                MAX(ts) AS max_ts,
+                (SELECT price FROM trades WHERE ticker = %s AND ts >= %s::timestamp - (%s * interval '1 minute') ORDER BY ts ASC LIMIT 1) AS open_p,
+                (SELECT price FROM trades WHERE ticker = %s AND ts <= %s::timestamp ORDER BY ts DESC LIMIT 1) AS close_p,
+                SUM(CASE WHEN qty <= 2 AND trade_type = 2 THEN qty 
+                         WHEN qty <= 2 AND trade_type = 3 THEN -qty ELSE 0 END) AS cvd_varejo,
+                SUM(CASE WHEN qty >= 20 AND trade_type = 2 THEN qty 
+                         WHEN qty >= 20 AND trade_type = 3 THEN -qty ELSE 0 END) AS cvd_big,
+                SUM(CASE WHEN trade_type = 2 THEN qty ELSE -qty END) AS cvd_total
+            FROM trades
+            WHERE ticker = %s AND ts >= %s::timestamp - (%s * interval '1 minute') AND ts <= %s::timestamp AND trade_type IN (2, 3)
+        """
+        
+        query_top_agents = """
+            SELECT 
+                agent_id,
+                (buy_qty - sell_qty) AS saldo,
+                ROUND((buy_qty + sell_qty)::numeric / NULLIF(buy_trades + sell_trades, 0), 2) AS lote_med
+            FROM agent_daily
+            WHERE ticker = %s AND date = CURRENT_DATE
+            ORDER BY ABS(buy_qty - sell_qty) DESC
+            LIMIT 3
+        """
+
+        with psycopg2.connect(self.dsn) as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query_trades, (ticker, current_ts, window_minutes, ticker, current_ts, ticker, current_ts, window_minutes, current_ts))
+                trade_data = cur.fetchone()
+                
+                cur.execute(query_top_agents, (ticker,))
+                top_agents = cur.fetchall()
+                
+                session_id = self.get_latest_session_id(conn, ticker)
+
+        return trade_data, top_agents, session_id
+
+    def avaliar_e_disparar_sinais(self, ticker: str, trade_data: dict, top_agents: list, session_id: int, current_ts: datetime = None):
+        """Avalia a microestrutura recente e emite alertas ou salva no banco de dados."""
+        if current_ts is None:
+            current_ts = datetime.now()
+        if not trade_data or not trade_data.get("n_trades") or trade_data["n_trades"] == 0:
+            return None
+
+        open_p = float(trade_data["open_p"] or 0)
+        close_p = float(trade_data["close_p"] or 0)
+        cvd_v = int(trade_data["cvd_varejo"] or 0)
+        cvd_b = int(trade_data["cvd_big"] or 0)
+        delta_p = round(close_p - open_p, 2)
+        total_qty = int(trade_data["total_qty"] or 0)
+
+        signal_type = "NEUTRAL"
+        direction = 0  # 1 alta, -1 baixa
+        strength = "Baixa"
+        prob_reversao = 30.0
+        msg_alerta = None
+
+        # Limpar setup armado se passou de 120 segundos (TTL do Combo)
+        now = current_ts
+        armed = self.armed_combo.get(ticker)
+        if armed and (now - armed["time"]).total_seconds() > 120:
+            self.armed_combo[ticker] = None
+            armed = None
+
+        # Lógica Preditiva de Microestrutura Real-Time
+        if cvd_b > 1200 and delta_p <= 1.5:
+            signal_type = "ABSORCAO_VENDEDORA"
+            direction = -1
+            strength = "ALTA"
+            prob_reversao = 82.5
+            msg_alerta = "🔥 ABSORÇÃO VENDEDORA INSTITUCIONAL"
+            self.armed_combo[ticker] = {"time": now, "direction": direction, "price": close_p, "cvd_b": cvd_b}
+
+        elif cvd_v > 400 and cvd_b < -400:
+            signal_type = "DISTRIBUICAO_TOPO"
+            direction = -1
+            strength = "MEDIA"
+            prob_reversao = 78.0
+            msg_alerta = "🎣 DISTRIBUIÇÃO INSTITUCIONAL"
+
+        elif cvd_b < -1200 and delta_p >= -1.5:
+            signal_type = "ABSORCAO_COMPRADORA"
+            direction = 1
+            strength = "ALTA"
+            prob_reversao = 85.0
+            msg_alerta = "🛡️ ABSORÇÃO COMPRADORA INSTITUCIONAL"
+            self.armed_combo[ticker] = {"time": now, "direction": direction, "price": close_p, "cvd_b": cvd_b}
+
+        elif cvd_v < -400 and cvd_b > 400:
+            signal_type = "ACUMULACAO_FUNDO"
+            direction = 1
+            strength = "MEDIA"
+            prob_reversao = 79.0
+            msg_alerta = "🚀 ACUMULAÇÃO INSTITUCIONAL"
+
+        elif cvd_b > 2500 and delta_p > 4.0:
+            if armed and armed["direction"] == 1:
+                # COMBO DE OURO COMPRADOR ATIVADO!
+                signal_type = "COMBO_ABSORCAO_IMPULSO_COMPRA"
+                direction = 1
+                strength = "ALTA"
+                prob_reversao = 92.5
+                msg_alerta = "👑 COMBO DE OURO ATIVADO -> COMPRA"
+                self.armed_combo[ticker] = None
+            else:
+                signal_type = "IMPULSO_COMPRADOR"
+                direction = 1
+                strength = "ALTA"
+                prob_reversao = 15.0
+                msg_alerta = "⚡ ROMPIMENTO / IMPULSO COMPRADOR"
+
+        elif cvd_b < -2500 and delta_p < -4.0:
+            if armed and armed["direction"] == -1:
+                # COMBO DE OURO VENDEDOR ATIVADO!
+                signal_type = "COMBO_ABSORCAO_IMPULSO_VENDA"
+                direction = -1
+                strength = "ALTA"
+                prob_reversao = 92.5
+                msg_alerta = "👑 COMBO DE OURO ATIVADO -> VENDA"
+                self.armed_combo[ticker] = None
+            else:
+                signal_type = "IMPULSO_VENDEDOR"
+                direction = -1
+                strength = "ALTA"
+                prob_reversao = 15.0
+                msg_alerta = "⚡ ROMPIMENTO / IMPULSO VENDEDOR"
+
+        # Se houver sinal relevante, evitar duplicidade no mesmo minuto e salvar no banco
+        sig_hash = f"{ticker}_{signal_type}_{close_p}"
+        if signal_type != "NEUTRAL":
+            # Calcular distância macro harmônica antes do ML
+            open_p = self._get_daily_open(ticker, now)
+            dist_to_macro_harmonic = None
+            step = None
+            harmonic_alert = ""
+            if open_p is not None:
+                step = self._get_daily_harmonic_step_cached(ticker, now)
+                if get_closest_harmonic_distance:
+                    scale = 10.0 if (ticker.startswith('WDO') or ticker.startswith('DOL')) else 1.0
+                    dist_to_macro_harmonic = get_closest_harmonic_distance(close_p / scale, open_p, step)
+
+            # Calcular pontuação instantânea do modelo supervisionado ML (Pilar 3 MLOps)
+            ml_conviction = self._predict_ml_conviction(signal_type, direction, cvd_b, cvd_v, delta_p, total_qty, dist_to_macro_harmonic)
+
+            if sig_hash != self.last_signal_hash.get(ticker) or (now - self.last_alert_time.get(ticker, datetime.min)).seconds > 120:
+                self.last_signal_hash[ticker] = sig_hash
+                self.last_alert_time[ticker] = now
+                
+                if open_p is not None and step is not None:
+                        
+                    dist_to_open = close_p - open_p
+                    mod_step = abs(dist_to_open) % step
+                    # Tolerância de 1.0 ponto (ou 0.5 se step for muito pequeno) da região do harmônico
+                    tol = min(1.0, step * 0.15) 
+                    
+                    if mod_step <= tol or mod_step >= (step - tol):
+                        multiple = round(abs(dist_to_open) / step)
+                        if multiple > 0:
+                            direction_str = "Superior" if dist_to_open > 0 else "Inferior"
+                            harmonic_val = open_p + (multiple * step if dist_to_open > 0 else -multiple * step)
+                            harmonic_alert = f"\n      🎯 \033[1;35m[FREQUÊNCIA HARMÔNICA] Testando {multiple}º Harmônico {direction_str} (H={harmonic_val:.2f} | Passo={step:.1f} pts)\033[0m"
+                            if "ABSORCAO" in signal_type or "COMBO" in signal_type:
+                                harmonic_alert += " -> \033[1;32mALTA PROBABILIDADE DO CAIXOTE (DEFESA INSTITUCIONAL)\033[0m"
+                            elif "IMPULSO" in signal_type:
+                                harmonic_alert += " -> \033[1;33mALERTA: TENTATIVA DE ROMPIMENTO DE HARMÔNICO\033[0m"
+
+                # Montar detalhes para a renderização Powerline Badges
+                agents_str = ", ".join([f"{get_corretora_label(a['agent_id'])} ({a['saldo']:+d} ctrs)" for a in top_agents]) if top_agents else ""
+                
+                details_list = []
+                if harmonic_alert:
+                    details_list.append(harmonic_alert.strip())
+                    
+                # Buscar e injetar contexto macro
+                global_ctx = get_global_context()
+                domestic_ctx = get_domestic_context()
+                
+                macro_info = "🌐 Macro: "
+                context_alignment = 0 # +1 para Alta no Dólar, -1 para Baixa no Dólar
+                
+                if global_ctx:
+                    dxy = global_ctx.get('dxy_var', 0)
+                    spx = global_ctx.get('spx_var', 0)
+                    macro_info += f"DXY={dxy:.2f}% | SPX={spx:.2f}% "
+                    if dxy > 0.1: context_alignment += 1
+                    elif dxy < -0.1: context_alignment -= 1
+                    if spx < -0.3: context_alignment += 1
+                    elif spx > 0.3: context_alignment -= 1
+                    
+                if domestic_ctx:
+                    win = domestic_ctx.get('win_delta_pts', 0)
+                    di1 = domestic_ctx.get('di1_delta_pts', 0)
+                    macro_info += f"| WIN={win:.0f}pts | DI1={di1:.1f}bps"
+                    if win < -300: context_alignment += 1
+                    elif win > 300: context_alignment -= 1
+                    if di1 > 5: context_alignment += 1
+                    elif di1 < -5: context_alignment -= 1
+                    
+                details_list.append(macro_info)
+                
+                # Regra de recomendação de Execução (Fase 3) baseada no alinhamento do Contexto vs Micro
+                if direction == 1 and context_alignment >= 2:
+                    details_list.append("🟢 \033[1;32m[CONTEXTO MACRO FAVORÁVEL: ALONGAR ALVO NA COMPRA!]\033[0m")
+                elif direction == -1 and context_alignment <= -2:
+                    details_list.append("🔴 \033[1;31m[CONTEXTO MACRO FAVORÁVEL: ALONGAR ALVO NA VENDA!]\033[0m")
+                elif (direction == 1 and context_alignment < 0) or (direction == -1 and context_alignment > 0):
+                    details_list.append("⚠️ \033[1;33m[CONTEXTO MACRO CONTRÁRIO: FAZER PARCIAIS CURTAS (SCALP)!]\033[0m")
+                else:
+                    details_list.append("⚖️ [CONTEXTO MACRO NEUTRO: SEGUIR GERENCIAMENTO PADRÃO]")
+
+                if "ABSORCAO" in signal_type and "COMBO" not in signal_type:
+                    details_list.append(f"Agressão de Big Players ({cvd_b:+d} ctrs) absorvida no book passivo.")
+                    details_list.append(f"Preço travado na região de {close_p} (Δ = {delta_p:+.2f} pts). Setup ARMADO (TTL 120s)!")
+                elif "COMBO" in signal_type:
+                    details_list.append(f"✅ Ignição confirmada após Absorção previa! Rompimento com tração de Big Players ({cvd_b:+d} ctrs).")
+                    details_list.append(f"Preço de acionamento: {close_p} (Δ = {delta_p:+.2f} pts) | Alvo rápido liberado!")
+                elif "IMPULSO" in signal_type:
+                    details_list.append(f"Big Players agredindo pesado ({cvd_b:+d} ctrs) rompendo níveis técnicos (Δ = {delta_p:+.2f} pts).")
+                elif "DISTRIBUICAO" in signal_type or "ACUMULACAO" in signal_type:
+                    details_list.append(f"Divergência institucional: Varejo ({cvd_v:+d} ctrs) vs Big Players ({cvd_b:+d} ctrs).")
+
+                # Injetar avaliação e guarda-corpo preditivo do Pilar 3 na interface visual
+                if ml_conviction is not None:
+                    if ml_conviction >= 65.0:
+                        details_list.insert(0, f"🤖 \033[1;32m[ML HIGH CONVICTION ⭐] Convicção Quantitativa: {ml_conviction}%\033[0m (IA supervisionada valida entrada forte no scalping!)")
+                        strength += " | ML: ⭐ ALTA"
+                        prob_reversao = ml_conviction
+                    elif ml_conviction <= 45.0:
+                        details_list.insert(0, f"🤖 \033[1;33m[ML LOW CONVICTION ⚠️] Convicção Quantitativa: {ml_conviction}%\033[0m (IA aponta RISCO DE STOP / armadilha de fluxo!)")
+                        strength += " | ML: ⚠️ BAIXA"
+                        prob_reversao = ml_conviction
+                    else:
+                        details_list.insert(0, f"🤖 \033[1;36m[ML CONVICTION] Convicção Quantitativa: {ml_conviction}%\033[0m (Setup regular)")
+                        prob_reversao = ml_conviction
+
+                # Disparar renderizador gráfico Powerline
+                self.print_powerline_alert(
+                    title=f"{ticker} | {msg_alerta}",
+                    price_str=f"PREÇO: {close_p:.2f} (Δ {delta_p:+.2f})",
+                    extra_str=f"PROB / FORÇA: {prob_reversao}% ({strength})",
+                    direction=direction,
+                    agents_str=agents_str,
+                    details_list=details_list
+                )
+
+                # Enriquecer top_agents com nome antes de salvar
+                enriched_agents = []
+                for a in top_agents:
+                    d = dict(a)
+                    d["corretora"] = get_corretora_label(a["agent_id"])
+                    enriched_agents.append(d)
+
+                # Timestamp de referência: horário exato do último trade da janela
+                signal_ts_ref = trade_data.get("max_ts") or datetime.now()
+                # Garantir que é um datetime naive (sem timezone) para o cálculo temporal
+                if hasattr(signal_ts_ref, "tzinfo") and signal_ts_ref.tzinfo is not None:
+                    signal_ts_ref = signal_ts_ref.replace(tzinfo=None)
+
+                # Registrar no PostgreSQL tabela signals com o horário EXATO do trade no mercado e o Score ML
+                if session_id:
+                    self.registrar_sinal(session_id, ticker, signal_type, direction, close_p, {
+                        "cvd_varejo":    cvd_v,
+                        "cvd_big":       cvd_b,
+                        "delta_p":       delta_p,
+                        "prob_reversao": prob_reversao,
+                        "ml_conviction": ml_conviction,
+                        "total_qty":     total_qty,
+                        "dist_to_macro_harmonic": dist_to_macro_harmonic,
+                        "global_dxy": global_ctx.get("dxy_var") if global_ctx else None,
+                        "global_spx": global_ctx.get("spx_var") if global_ctx else None,
+                        "domestic_win": domestic_ctx.get("win_delta_pts") if domestic_ctx else None,
+                        "domestic_di1": domestic_ctx.get("di1_delta_pts") if domestic_ctx else None,
+                        **calcular_features_temporais(signal_ts_ref),
+                        "top_agents":    enriched_agents,
+                    }, signal_ts=signal_ts_ref)
+
+        return signal_type
+
+    def registrar_sinal(self, session_id: int, ticker: str, signal_type: str, direction: int, price: float, context: dict, signal_ts=None):
+        """Salva o alerta disparado na tabela `signals` para validação quantitativa posterior."""
+        query = """
+            INSERT INTO signals (session_id, ticker, ts, signal_type, direction, price_at_signal, context)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        ts_val = signal_ts if signal_ts else datetime.now()
+        try:
+            with psycopg2.connect(self.dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (
+                        session_id, ticker, ts_val, signal_type, direction, price, json.dumps(context, default=float)
+                    ))
+            log.info(f"Sinal gravado no banco de dados: {signal_type} ({ticker} @ {price} | ts: {ts_val})")
+        except Exception as e:
+            log.error(f"Erro ao salvar sinal no banco: {e}")
+
+    def loop_monitoramento(self, ticker: str, interval_seconds: int = 10, window_minutes: int = 5):
+        """Executa em loop contínuo monitorando o fluxo em tempo real."""
+        log.info(f"Iniciando monitoramento ML em TEMPO REAL para {ticker} (Janela de {window_minutes}m, Polling a cada {interval_seconds}s)...")
+        print("Pressione Ctrl+C para encerrar o monitoramento.")
+        try:
+            while True:
+                now = datetime.now()
+                trade_data, top_agents, session_id = self.analisar_janela_atual(ticker, window_minutes, now)
+                self.avaliar_e_disparar_sinais(ticker, trade_data, top_agents, session_id, now)
+                time.sleep(interval_seconds)
+        except KeyboardInterrupt:
+            log.info("Monitoramento encerrado pelo usuário.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Módulo Preditivo ML em Tempo Real - ProfitDLL")
+    parser.add_argument("--ticker", type=str, default="WDOQ26", help="Ativo para monitorar (padrão: WDOQ26)")
+    parser.add_argument("--interval", type=int, default=10, help="Intervalo de verificação em segundos (padrão: 10s)")
+    parser.add_argument("--window", type=int, default=5, help="Janela móvel de análise em minutos (padrão: 5m)")
+    parser.add_argument("--once", action="store_true", help="Executa apenas uma leitura pontual (sem loop)")
+    args = parser.parse_args()
+
+    predictor = MLLivePredictor()
+    ticker = args.ticker.upper()
+
+    if args.once:
+        now = datetime.now()
+        trade_data, top_agents, session_id = predictor.analisar_janela_atual(ticker, args.window, now)
+        sig = predictor.avaliar_e_disparar_sinais(ticker, trade_data, top_agents, session_id, now)
+        if sig == "NEUTRAL":
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {ticker} — Fluxo Neutro / Sem anomalias na janela de {args.window} min.")
+    else:
+        predictor.loop_monitoramento(ticker, interval_seconds=args.interval, window_minutes=args.window)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,26 @@
+BACKTEST: EFEITO DOS HARMÔNICOS DE VOLATILIDADE (45D)
+
+                                              count  mean
+signal_type                   zona_harmonica             
+ABSORCAO_COMPRADORA           FORA             9045   0.5
+                              NA_ZONA          1447   0.0
+ABSORCAO_VENDEDORA            FORA             9015   0.6
+                              NA_ZONA          1527   0.0
+ACUMULACAO_FUNDO              FORA              751   1.3
+                              NA_ZONA            94   0.0
+COMBO_ABSORCAO_IMPULSO_COMPRA FORA               57   0.0
+                              NA_ZONA             9   0.0
+COMBO_ABSORCAO_IMPULSO_VENDA  FORA               74   0.0
+                              NA_ZONA             9   0.0
+DISTRIBUICAO_TOPO             FORA             2143   0.6
+                              NA_ZONA           312   0.0
+IMPULSO_COMPRADOR             FORA             3457   4.1
+                              NA_ZONA           437   0.0
+IMPULSO_VENDEDOR              FORA             3623   2.5
+                              NA_ZONA           495   0.0
+
+Resumo por Localização:
+                count  mean
+zona_harmonica             
+FORA            28165   1.3
+NA_ZONA          4330   0.0
