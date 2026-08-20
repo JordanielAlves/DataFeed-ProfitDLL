@@ -26,7 +26,7 @@ from flow_engine    import FlowEngine, FlowSnapshot
 from data_recorder  import DataRecorder
 from global_context import start_global_context, stop_global_context
 
-from config import ASSETS
+from config import ASSETS, PROFIT, DLL_PATH
 
 # Caminho padrão da DLL (Win64)
 DEFAULT_DLL = os.path.join(
@@ -178,7 +178,7 @@ Comandos disponíveis:
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Leitor de Fluxo de Ordens — ProfitDLL")
-    parser.add_argument("--dll", default=DEFAULT_DLL, help="Caminho para ProfitDLL.dll")
+    parser.add_argument("--dll", default=DLL_PATH, help="Caminho para ProfitDLL.dll")
     parser.add_argument("--key",  default=None, help="Chave de acesso Nelogica")
     parser.add_argument("--user", default=None, help="Usuário (email ou CPF)")
     parser.add_argument("--market-only", action="store_true",
@@ -188,13 +188,17 @@ def main():
     # Verificar DLL
     if not os.path.isfile(args.dll):
         print(f"[ERRO] DLL não encontrada: {args.dll}")
-        print("  Informe o caminho com --dll")
+        print("  Verifique o caminho em config.py (DLL_PATH)")
         sys.exit(1)
 
-    # Credenciais
-    key      = args.key  or input("Chave de acesso: ").strip()
-    user     = args.user or input("Usuário (email/CPF): ").strip()
-    password = getpass("Senha: ")
+    # Credenciais automáticas via config.py (com fallback args)
+    key      = args.key  or PROFIT.get("key")
+    user     = args.user or PROFIT.get("user")
+    password = PROFIT.get("password")
+
+    if not key or not user or not password:
+        print("[ERRO] Credenciais ausentes. Verifique o config.py.")
+        sys.exit(1)
 
     # Inicializar componentes
     start_global_context()
