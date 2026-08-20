@@ -69,8 +69,8 @@ def _imbalance_bar(imb) -> str:
 def print_header():
     print()
     print("=" * 90)
-    print(f"  {'HORA':<15} {'ATIVO':<10} {'PREÇO':>10}  {'LADO':<5}  "
-          f"{'QTD':>4}  {'CVD':>7}  {'Δ DIA':>7}  IMBALANCE")
+    print(f"  {'HORA':<15} {'ATIVO':<10} {'PRECO':>10}  {'LADO':<5}  "
+          f"{'QTD':>4}  {'CVD':>7}  {'D DIA':>7}  IMBALANCE")
     print("=" * 90)
 
 def print_status(snap: FlowSnapshot):
@@ -103,7 +103,7 @@ def print_status(snap: FlowSnapshot):
             print(f"    {lvl.price:>10.2f}  "
                   f"C {bar_b:<20} {lvl.buy_qty:>5}  "
                   f"V {bar_s:<20} {lvl.sell_qty:>5}  "
-                  f"Δ {lvl.delta:>+6}")
+                  f"D {lvl.delta:>+6}")
 
 # ---------------------------------------------------------------------------
 # CLI interativa simples
@@ -167,7 +167,7 @@ Comandos disponíveis:
                     for lvl in snap.top_footprint_levels(n):
                         print(f"    {lvl.price:>10.2f}  "
                               f"C={lvl.buy_qty:>5}  V={lvl.sell_qty:>5}  "
-                              f"Δ={lvl.delta:>+6}  "
+                              f"D={lvl.delta:>+6}  "
                               f"Dom={'COMP' if lvl.delta > 0 else 'VEND' if lvl.delta < 0 else 'NEUT'}")
 
         else:
@@ -262,7 +262,7 @@ def main():
         exchange = asset['exchange']
         r = bridge.subscribe(ticker, exchange)
         bridge.subscribe_price_depth(ticker, exchange)
-        print(f"  → [{ticker}] Subscrito com sucesso (código {r})")
+        print(f"  -> [{ticker}] Subscrito com sucesso (código {r})")
 
     print_header()
 

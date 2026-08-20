@@ -317,6 +317,7 @@ class ProfitBridge:
         # Manter referências dos callbacks para evitar GC
         self._cb_state      = None
         self._cb_trade      = None
+        self._cb_history_trade = None
         self._cb_book       = None
         self._cb_daily      = None
         self._cb_progress   = None
@@ -331,8 +332,13 @@ class ProfitBridge:
         dll = self._dll
         dll.TranslateTrade.argtypes  = [c_size_t, POINTER(TConnectorTrade)]
         dll.TranslateTrade.restype   = c_int
-        dll.SetTradeCallbackV2.argtypes = [WINFUNCTYPE(None, TConnectorAssetIdentifierSafe, c_size_t, c_uint)]
+        # SetTradeCallbackV2 (live) usa TConnectorAssetIdentifier (direto)
+        # SetHistoryTradeCallbackV2 usa TConnectorAssetIdentifierSafe
+        dll.SetTradeCallbackV2.argtypes = [WINFUNCTYPE(None, TConnectorAssetIdentifier, c_size_t, c_uint)]
         dll.SetTradeCallbackV2.restype = c_int
+        if hasattr(dll, 'SetHistoryTradeCallbackV2'):
+            dll.SetHistoryTradeCallbackV2.argtypes = [WINFUNCTYPE(None, TConnectorAssetIdentifierSafe, c_size_t, c_uint)]
+            dll.SetHistoryTradeCallbackV2.restype = c_int
         dll.SetOfferBookCallbackV2.restype = c_int
         dll.SubscribeTicker.argtypes = [c_wchar_p, c_wchar_p]
         dll.SubscribeTicker.restype  = c_int
@@ -366,6 +372,7 @@ class ProfitBridge:
         """
         self._cb_state      = self._make_state_callback()
         self._cb_trade      = self._make_trade_callback()
+        self._cb_history_trade = self._make_history_trade_callback()
         self._cb_book       = self._make_book_callback()
         self._cb_daily      = self._make_daily_callback()
         self._cb_progress   = self._make_progress_callback()
@@ -407,6 +414,8 @@ class ProfitBridge:
         # Registrar callbacks adicionais
         self._dll.SetOfferBookCallbackV2(self._cb_book)
         self._dll.SetTradeCallbackV2(self._cb_trade)
+        if hasattr(self._dll, 'SetHistoryTradeCallbackV2'):
+            self._dll.SetHistoryTradeCallbackV2(self._cb_history_trade)
 
         return result
 
@@ -416,23 +425,33 @@ class ProfitBridge:
     # ------------------------------------------------------------------
     # Subscriptions
     # ------------------------------------------------------------------
-    def subscribe(self, ticker: str, exchange: str = "F"):
+    def subscribe(self, ticker: str, exchange: str = "F") -> int:
         """Inscreve em trades (ticker) e book de ofertas."""
-        self._dll.SubscribeTicker(c_wchar_p(ticker), c_wchar_p(exchange))
-        self._dll.SubscribeOfferBook(c_wchar_p(ticker), c_wchar_p(exchange))
+        if not hasattr(self, '_str_refs'): self._str_refs = []
+        c_tick, c_exch = c_wchar_p(ticker), c_wchar_p(exchange)
+        self._str_refs.append((c_tick, c_exch))
+        
+        r1 = self._dll.SubscribeTicker(c_tick, c_exch)
+        r2 = self._dll.SubscribeOfferBook(c_tick, c_exch)
+        return r1
 
     def unsubscribe(self, ticker: str, exchange: str = "F"):
-        self._dll.UnsubscribeTicker(c_wchar_p(ticker), c_wchar_p(exchange))
+        if not hasattr(self, '_str_refs'): self._str_refs = []
+        c_tick, c_exch = c_wchar_p(ticker), c_wchar_p(exchange)
+        self._str_refs.append((c_tick, c_exch))
+        self._dll.UnsubscribeTicker(c_tick, c_exch)
 
     # ------------------------------------------------------------------
     # Estado de conexão
     # ------------------------------------------------------------------
     @property
     def is_connected(self) -> bool:
-        return self._market_connected and self._activated
+        """True quando o market data está pronto (MARKET_DATA_READY).
+        Ativação é necessária para roteamento de ordens, mas não para receber trades."""
+        return self._market_connected
 
     def wait_connected(self, timeout: float = 30.0) -> bool:
-        """Bloqueia até conectar ou timeout (segundos)."""
+        """Bloqueia até market data estar pronto ou timeout (segundos)."""
         import time
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -447,15 +466,26 @@ class ProfitBridge:
     def _make_state_callback(self):
         bridge = self
 
+        _login_labels = {0: "OK", 1: "JA_CONECTADO", 2: "CHAVE_INVALIDA", 3: "FALHA_CONN"}
+        _market_labels = {0: "DESCONECTADO", 1: "CONECTANDO", 2: "CONECTADO", 3: "RECONECTANDO", 4: "DADOS_PRONTOS"}
+        _activ_labels = {0: "OK", 1: "INVALIDO", 2: "EXPIRADO"}
+
         @WINFUNCTYPE(None, c_int32, c_int32)
         def _cb(nType, nResult):
             with bridge._lock:
                 if nType == STATE_TYPE_LOGIN:
-                    bridge._logged_in = (nResult == LOGIN_OK)
+                    # LOGIN_OK (0) ou LOGIN_ALREADY (1) são ambos estados válidos de login
+                    bridge._logged_in = nResult in (LOGIN_OK, LOGIN_ALREADY)
+                    label = _login_labels.get(nResult, str(nResult))
+                    print(f"[DLL] Login: {label}")
                 elif nType == STATE_TYPE_MARKET:
                     bridge._market_connected = (nResult == MARKET_DATA_READY)
+                    label = _market_labels.get(nResult, str(nResult))
+                    print(f"[DLL] Market: {label}")
                 elif nType == STATE_TYPE_ACTIVATION:
                     bridge._activated = (nResult == ACTIVATION_OK)
+                    label = _activ_labels.get(nResult, str(nResult))
+                    print(f"[DLL] Ativacao: {label}")
 
             if bridge.on_connected:
                 bridge.on_connected(bridge.is_connected)
@@ -466,11 +496,51 @@ class ProfitBridge:
         bridge = self
         dll    = self._dll
 
+        # O tradeCallback de live usa TConnectorAssetIdentifier (normal, não Safe)
+        # conforme exemplo oficial Nelogica linha 347
+        @WINFUNCTYPE(None, TConnectorAssetIdentifier, c_size_t, c_uint)
+        def _cb(assetId, pTrade, flags):
+            ticker_name = assetId.Ticker or ""
+            trade_struct = TConnectorTrade(Version=0)
+            # TranslateTrade retorna NL_OK (0) em sucesso — verificar == 0
+            if dll.TranslateTrade(pTrade, byref(trade_struct)) != 0:
+                return
+
+            st  = trade_struct.TradeDate
+            try:
+                ts = datetime(st.wYear, st.wMonth, st.wDay,
+                              st.wHour, st.wMinute, st.wSecond,
+                              st.wMilliseconds * 1000)
+            except Exception:
+                ts = datetime.now()
+
+            event = TradeEvent(
+                ticker       = ticker_name,
+                price        = trade_struct.Price,
+                qty          = int(trade_struct.Quantity),
+                volume       = trade_struct.Volume,
+                buy_agent    = trade_struct.BuyAgent,
+                sell_agent   = trade_struct.SellAgent,
+                trade_type   = int(trade_struct.TradeType),
+                ts           = ts,
+                trade_number = trade_struct.TradeNumber,
+            )
+
+            if bridge.on_trade:
+                bridge.on_trade(event)
+
+        return _cb
+
+    def _make_history_trade_callback(self):
+        bridge = self
+        dll    = self._dll
+
+        # O historyTradeCallback usa TConnectorAssetIdentifierSafe — correto per exemplo oficial linha 259
         @WINFUNCTYPE(None, TConnectorAssetIdentifierSafe, c_size_t, c_uint)
         def _cb(assetSafe, pTrade, flags):
             ticker_name = cast(assetSafe.Ticker, c_wchar_p).value if assetSafe.Ticker else ""
             trade_struct = TConnectorTrade(Version=0)
-            if not dll.TranslateTrade(pTrade, byref(trade_struct)):
+            if dll.TranslateTrade(pTrade, byref(trade_struct)) != 0:
                 return
 
             st  = trade_struct.TradeDate
@@ -577,20 +647,28 @@ class ProfitBridge:
 
     def subscribe_price_depth(self, ticker: str, exchange: str = "F") -> bool:
         if not hasattr(self._dll, 'SubscribePriceDepth'): return False
+        if not hasattr(self, '_str_refs'): self._str_refs = []
+        c_tick, c_exch = c_wchar_p(ticker), c_wchar_p(exchange)
+        self._str_refs.append((c_tick, c_exch))
+        
         asset = TConnectorAssetIdentifier()
         asset.Version  = 0
-        asset.Ticker   = ticker
-        asset.Exchange = exchange
+        asset.Ticker   = c_tick
+        asset.Exchange = c_exch
         asset.FeedType = 0
         ret = self._dll.SubscribePriceDepth(byref(asset))
         return ret == 0
 
     def unsubscribe_price_depth(self, ticker: str, exchange: str = "F"):
         if not hasattr(self._dll, 'UnsubscribePriceDepth'): return
+        if not hasattr(self, '_str_refs'): self._str_refs = []
+        c_tick, c_exch = c_wchar_p(ticker), c_wchar_p(exchange)
+        self._str_refs.append((c_tick, c_exch))
+        
         asset = TConnectorAssetIdentifier()
         asset.Version  = 0
-        asset.Ticker   = ticker
-        asset.Exchange = exchange
+        asset.Ticker   = c_tick
+        asset.Exchange = c_exch
         asset.FeedType = 0
         self._dll.UnsubscribePriceDepth(byref(asset))
 
@@ -598,6 +676,8 @@ class ProfitBridge:
                         n_levels: int = 20) -> dict:
         result = {"bid": [], "ask": []}
         if not hasattr(self._dll, 'GetPriceDepthSideCount'): return result
+        
+        # Aqui o ponteiro é temporário pois a chamada é síncrona
         asset = TConnectorAssetIdentifier()
         asset.Version  = 0
         asset.Ticker   = ticker
