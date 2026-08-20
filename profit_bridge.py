@@ -559,20 +559,20 @@ class ProfitBridge:
         if not hasattr(self._dll, 'SubscribePriceDepth'): return False
         asset = TConnectorAssetIdentifier()
         asset.Version  = 0
-        asset.Ticker   = ticker.encode('utf-8')
-        asset.Exchange = exchange.encode('utf-8')
+        asset.Ticker   = ticker
+        asset.Exchange = exchange
         asset.FeedType = 0
-        ret = self._dll.SubscribePriceDepth(asset)
+        ret = self._dll.SubscribePriceDepth(byref(asset))
         return ret == 0
 
     def unsubscribe_price_depth(self, ticker: str, exchange: str = "F"):
         if not hasattr(self._dll, 'UnsubscribePriceDepth'): return
         asset = TConnectorAssetIdentifier()
         asset.Version  = 0
-        asset.Ticker   = ticker.encode('utf-8')
-        asset.Exchange = exchange.encode('utf-8')
+        asset.Ticker   = ticker
+        asset.Exchange = exchange
         asset.FeedType = 0
-        self._dll.UnsubscribePriceDepth(asset)
+        self._dll.UnsubscribePriceDepth(byref(asset))
 
     def get_price_depth(self, ticker: str, exchange: str = "F",
                         n_levels: int = 20) -> dict:
@@ -585,11 +585,11 @@ class ProfitBridge:
         asset.FeedType = 0
 
         for side_name, side_int in [("bid", BOOK_SIDE_BUY), ("ask", BOOK_SIDE_SELL)]:
-            total = self._dll.GetPriceDepthSideCount(asset, side_int)
+            total = self._dll.GetPriceDepthSideCount(byref(asset), side_int)
             for pos in range(min(n_levels, total)):
                 grupo = TConnectorPriceGroup()
                 grupo.Version = 0
-                ret = self._dll.GetPriceGroup(asset, side_int, pos, byref(grupo))
+                ret = self._dll.GetPriceGroup(byref(asset), side_int, pos, byref(grupo))
                 if ret == 0:
                     is_theoric = bool(grupo.PriceGroupFlags & PG_IS_THEORIC)
                     result[side_name].append({
