@@ -326,11 +326,14 @@ class ProfitBridge:
         dll.SubscribeTicker.restype  = c_int
         dll.SubscribeOfferBook.restype = c_int
         dll.DLLFinalize.restype      = c_int
-        # Price Depth
-        dll.SubscribePriceDepth.restype        = c_int
-        dll.UnsubscribePriceDepth.restype      = c_int
-        dll.GetPriceDepthSideCount.restype     = c_int
-        dll.GetPriceGroup.restype              = c_int
+        # Price Depth (tentar carregar, caso a DLL não suporte, ignorar silenciosamente)
+        try:
+            dll.SubscribePriceDepth.restype        = c_int
+            dll.UnsubscribePriceDepth.restype      = c_int
+            dll.GetPriceDepthSideCount.restype     = c_int
+            dll.GetPriceGroup.restype              = c_int
+        except AttributeError:
+            pass
         dll.GetTheoreticalValues.restype       = c_int
 
     # ------------------------------------------------------------------
@@ -548,52 +551,38 @@ class ProfitBridge:
     # ------------------------------------------------------------------
 
     def setup_price_depth(self):
-        """
-        Registra o callback de price depth.
-        Chamar UMA VEZ após initialize(), antes de subscribe_price_depth().
-        Requer que on_price_depth esteja definido no objeto.
-        """
+        if not hasattr(self._dll, 'SetPriceDepthCallback'): return
         self._cb_price_depth = self._make_price_depth_callback()
         self._dll.SetPriceDepthCallback(self._cb_price_depth)
 
     def subscribe_price_depth(self, ticker: str, exchange: str = "F") -> bool:
-        """
-        Assina o livro de profundidade de um ativo.
-        Retorna True se sucesso (código NL_OK = 0).
-        """
+        if not hasattr(self._dll, 'SubscribePriceDepth'): return False
         asset = TConnectorAssetIdentifier()
         asset.Version  = 0
-        asset.Ticker   = ticker
-        asset.Exchange = exchange
+        asset.Ticker   = ticker.encode('utf-8')
+        asset.Exchange = exchange.encode('utf-8')
         asset.FeedType = 0
         ret = self._dll.SubscribePriceDepth(asset)
         return ret == 0
 
     def unsubscribe_price_depth(self, ticker: str, exchange: str = "F"):
+        if not hasattr(self._dll, 'UnsubscribePriceDepth'): return
         asset = TConnectorAssetIdentifier()
         asset.Version  = 0
-        asset.Ticker   = ticker
-        asset.Exchange = exchange
+        asset.Ticker   = ticker.encode('utf-8')
+        asset.Exchange = exchange.encode('utf-8')
         asset.FeedType = 0
         self._dll.UnsubscribePriceDepth(asset)
 
     def get_price_depth(self, ticker: str, exchange: str = "F",
                         n_levels: int = 20) -> dict:
-        """
-        Lê o estado atual do livro de profundidade (price depth).
-        Retorna dict com chaves 'bid' e 'ask', cada uma lista de dicts:
-            [{"price": float, "qty": int, "count": int, "is_theoric": bool}, ...]
-
-        Chamar de uma thread separada (NÃO dentro do callback — bloqueia ConnectorThread).
-        A posição 0 é sempre o topo (melhor bid / melhor ask).
-        """
+        result = {"bid": [], "ask": []}
+        if not hasattr(self._dll, 'GetPriceDepthSideCount'): return result
         asset = TConnectorAssetIdentifier()
         asset.Version  = 0
         asset.Ticker   = ticker
         asset.Exchange = exchange
         asset.FeedType = 0
-
-        result = {"bid": [], "ask": []}
 
         for side_name, side_int in [("bid", BOOK_SIDE_BUY), ("ask", BOOK_SIDE_SELL)]:
             total = self._dll.GetPriceDepthSideCount(asset, side_int)
