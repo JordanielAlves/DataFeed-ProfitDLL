@@ -260,8 +260,9 @@ def main():
     for asset in ASSETS:
         ticker = asset['ticker']
         exchange = asset['exchange']
-        bridge.subscribe(ticker, exchange)
+        r = bridge.subscribe(ticker, exchange)
         bridge.subscribe_price_depth(ticker, exchange)
+        print(f"  → [{ticker}] Subscrito com sucesso (código {r})")
 
     print_header()
 

@@ -29,6 +29,14 @@ class TConnectorAssetIdentifier(Structure):
         ("FeedType", c_ubyte),
     ]
 
+class TConnectorAssetIdentifierSafe(Structure):
+    _fields_ = [
+        ("Version",  c_ubyte),
+        ("Ticker",   c_void_p),
+        ("Exchange", c_void_p),
+        ("FeedType", c_ubyte),
+    ]
+
 class SystemTime(Structure):
     _fields_ = [
         ("wYear",         c_ushort),
@@ -323,15 +331,26 @@ class ProfitBridge:
         dll = self._dll
         dll.TranslateTrade.argtypes  = [c_size_t, POINTER(TConnectorTrade)]
         dll.TranslateTrade.restype   = c_int
+        dll.SetTradeCallbackV2.argtypes = [WINFUNCTYPE(None, TConnectorAssetIdentifierSafe, c_size_t, c_uint)]
+        dll.SetTradeCallbackV2.restype = c_int
+        dll.SetOfferBookCallbackV2.restype = c_int
+        dll.SubscribeTicker.argtypes = [c_wchar_p, c_wchar_p]
         dll.SubscribeTicker.restype  = c_int
+        dll.SubscribeOfferBook.argtypes = [c_wchar_p, c_wchar_p]
         dll.SubscribeOfferBook.restype = c_int
+        dll.UnsubscribeTicker.argtypes = [c_wchar_p, c_wchar_p]
+        dll.UnsubscribeTicker.restype = c_int
         dll.DLLFinalize.restype      = c_int
-        # Price Depth (tentar carregar, caso a DLL não suporte, ignorar silenciosamente)
+        # Price Depth
         try:
-            dll.SubscribePriceDepth.restype        = c_int
-            dll.UnsubscribePriceDepth.restype      = c_int
-            dll.GetPriceDepthSideCount.restype     = c_int
-            dll.GetPriceGroup.restype              = c_int
+            dll.SubscribePriceDepth.argtypes   = [POINTER(TConnectorAssetIdentifier)]
+            dll.SubscribePriceDepth.restype    = c_int
+            dll.UnsubscribePriceDepth.argtypes = [POINTER(TConnectorAssetIdentifier)]
+            dll.UnsubscribePriceDepth.restype  = c_int
+            dll.GetPriceDepthSideCount.argtypes = [POINTER(TConnectorAssetIdentifier), c_ubyte]
+            dll.GetPriceDepthSideCount.restype = c_int
+            dll.GetPriceGroup.argtypes         = [POINTER(TConnectorAssetIdentifier), c_ubyte, c_int, POINTER(TConnectorPriceGroup)]
+            dll.GetPriceGroup.restype          = c_int
         except AttributeError:
             pass
         dll.GetTheoreticalValues.restype       = c_int
@@ -447,8 +466,9 @@ class ProfitBridge:
         bridge = self
         dll    = self._dll
 
-        @WINFUNCTYPE(None, TConnectorAssetIdentifier, c_size_t, c_uint)
-        def _cb(assetId, pTrade, flags):
+        @WINFUNCTYPE(None, TConnectorAssetIdentifierSafe, c_size_t, c_uint)
+        def _cb(assetSafe, pTrade, flags):
+            ticker_name = cast(assetSafe.Ticker, c_wchar_p).value if assetSafe.Ticker else ""
             trade_struct = TConnectorTrade(Version=0)
             if not dll.TranslateTrade(pTrade, byref(trade_struct)):
                 return
@@ -462,7 +482,7 @@ class ProfitBridge:
                 ts = datetime.now()
 
             event = TradeEvent(
-                ticker       = assetId.Ticker or "",
+                ticker       = ticker_name or "",
                 price        = trade_struct.Price,
                 qty          = int(trade_struct.Quantity),
                 volume       = trade_struct.Volume,
