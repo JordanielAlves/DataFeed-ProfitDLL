@@ -24,15 +24,9 @@ from profit_bridge  import (
 )
 from flow_engine    import FlowEngine, FlowSnapshot
 from data_recorder  import DataRecorder
+from global_context import start_global_context, stop_global_context
 
-# ---------------------------------------------------------------------------
-# Ativos monitorados
-# ---------------------------------------------------------------------------
-ASSETS = [
-    ("WDOK25",  "F"),   # Mini Dólar — vencimento corrente (ajustar conforme necessário)
-    ("DOLK25",  "F"),   # Dólar Cheio
-    ("DOLPRO",  "F"),   # DolPro (ativo de fluxo contínuo)
-]
+from config import ASSETS
 
 # Caminho padrão da DLL (Win64)
 DEFAULT_DLL = os.path.join(
@@ -203,6 +197,7 @@ def main():
     password = getpass("Senha: ")
 
     # Inicializar componentes
+    start_global_context()
     bridge   = ProfitBridge(args.dll)
     engine   = FlowEngine()
     recorder = DataRecorder()
@@ -257,8 +252,10 @@ def main():
         print("[AVISO] Timeout aguardando conexão. Verifique se o ProfitPro está aberto e logado.")
 
     # Inscrever nos ativos (trades + offer book + price depth)
-    print(f"\nInscrevendo nos ativos: {[a[0] for a in ASSETS]}")
-    for ticker, exchange in ASSETS:
+    print(f"\nInscrevendo nos ativos: {[a['ticker'] for a in ASSETS]}")
+    for asset in ASSETS:
+        ticker = asset['ticker']
+        exchange = asset['exchange']
         bridge.subscribe(ticker, exchange)
         bridge.subscribe_price_depth(ticker, exchange)
 
@@ -273,6 +270,7 @@ def main():
     print("\nFinalizando DLL...")
     bridge.finalize()
     recorder.stop()
+    stop_global_context()
     print("Encerrado.")
 
 
