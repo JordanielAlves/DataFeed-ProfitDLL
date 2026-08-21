@@ -107,3 +107,26 @@ ANALYSIS = {
     "retail_signal_threshold":  200,    # saldo líquido de varejo para gerar alerta
     "cvd_divergence_points":    50,     # divergência CVD/preço para alerta
 }
+
+# ---------------------------------------------------------------------------
+# Alertas via Telegram
+# Para configurar:
+#   1. Abra o Telegram e converse com @BotFather
+#   2. Envie /newbot e siga as instruções → você receberá um TOKEN
+#   3. Abra t.me/userinfobot para descobrir seu CHAT_ID
+#   4. Preencha token e chat_id abaixo e mude enabled para True
+# ---------------------------------------------------------------------------
+TELEGRAM = {
+    "token":    os.getenv("TELEGRAM_TOKEN",   ""),   # ex: "7123456789:AAFxxxxxx"
+    "chat_id":  os.getenv("TELEGRAM_CHAT_ID", ""),   # ex: "123456789"
+    "enabled":  False,   # mudar para True após configurar token e chat_id
+}
+
+# ---------------------------------------------------------------------------
+# Pregão B3 (horários para watchdog e qualidade de dados)
+# ---------------------------------------------------------------------------
+PREGAO = {
+    "hora_inicio":  "08:45",   # watchdog começa a monitorar
+    "hora_fim":     "18:15",   # watchdog para de monitorar
+    "quality_check":"18:30",   # horário do daily_quality_check.py
+}
