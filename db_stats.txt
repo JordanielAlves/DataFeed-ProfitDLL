@@ -1,0 +1,16 @@
+Ativo: WINFUT | Dias: 22 | Periodo: 2026-06-15 a 2026-07-14 | Total de trades: 82363426
+Ativo: WDOFUT | Dias: 22 | Periodo: 2026-06-15 a 2026-07-14 | Total de trades: 8985191
+Ativo: WDOM26 | Dias: 20 | Periodo: 2026-05-04 a 2026-05-29 | Total de trades: 8212931
+Ativo: WDOK26 | Dias: 18 | Periodo: 2026-04-01 a 2026-04-29 | Total de trades: 8484771
+Ativo: WDOU26 | Dias: 16 | Periodo: 2026-07-30 a 2026-08-20 | Total de trades: 4776462
+Ativo: WDOQ26 | Dias: 13 | Periodo: 2026-07-14 a 2026-07-31 | Total de trades: 4156571
+Ativo: WDON26 | Dias: 9 | Periodo: 2026-06-01 a 2026-06-30 | Total de trades: 4982960
+Ativo: WINV26 | Dias: 5 | Periodo: 2026-08-03 a 2026-08-20 | Total de trades: 252378
+Ativo: DOLQ26 | Dias: 5 | Periodo: 2026-07-14 a 2026-07-20 | Total de trades: 56570
+Ativo: INDQ26 | Dias: 5 | Periodo: 2026-07-14 a 2026-07-20 | Total de trades: 14782
+Ativo: WINQ26 | Dias: 5 | Periodo: 2026-07-14 a 2026-07-20 | Total de trades: 13844720
+Ativo: DOLM26 | Dias: 3 | Periodo: 2026-05-05 a 2026-05-29 | Total de trades: 2678
+Ativo: DOLK26 | Dias: 2 | Periodo: 2026-04-23 a 2026-04-24 | Total de trades: 44091
+Ativo: DOLFUT | Dias: 2 | Periodo: 2026-06-24 a 2026-07-10 | Total de trades: 2
+Ativo: DI1F29 | Dias: 1 | Periodo: 2026-08-20 a 2026-08-20 | Total de trades: 3
+Ativo: DI1F27 | Dias: 1 | Periodo: 2026-08-20 a 2026-08-20 | Total de trades: 3

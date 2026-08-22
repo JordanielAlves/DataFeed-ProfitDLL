@@ -18,7 +18,9 @@ def run_check(target_date):
     report = [f"📊 Quality Check: {target_date}"]
     critical_issues = 0
     
-    for ticker in ASSETS:
+    for asset_info in ASSETS:
+        ticker = asset_info["ticker"] if isinstance(asset_info, dict) else asset_info
+        
         # Pega estatisticas basicas
         cur.execute("""
             SELECT count(*), min(price), max(price), min(ts), max(ts)
@@ -38,7 +40,10 @@ def run_check(target_date):
             pmin = float(pmin) / 10.0 if pmin else 0
             pmax = float(pmax) / 10.0 if pmax else 0
             
-        report.append(f"✅ {ticker}: {count} trades | {pmin} -> {pmax} | {tmin.strftime('%H:%M:%S')} até {tmax.strftime('%H:%M:%S')}")
+        tmin_str = tmin.strftime('%H:%M:%S') if tmin else 'N/A'
+        tmax_str = tmax.strftime('%H:%M:%S') if tmax else 'N/A'
+            
+        report.append(f"✅ {ticker}: {count} trades | {pmin} -> {pmax} | {tmin_str} até {tmax_str}")
         
     cur.close()
     conn.close()

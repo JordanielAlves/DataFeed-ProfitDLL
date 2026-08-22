@@ -48,7 +48,7 @@ PROFIT = {
 ASSETS = [
     # Contratos vigentes:
     {"ticker": "WDOU26",  "exchange": "F"},   # Mini Dólar — Vencimento Setembro/26
-    {"ticker": "WINV26",  "exchange": "F"},   # Mini Índice — Vencimento Outubro/26
+ #   {"ticker": "WINV26",  "exchange": "F"},   # Mini Índice — Vencimento Outubro/26
     {"ticker": "DI1F27",  "exchange": "F"},   # Juros Futuros Jan/2027 (Contexto Macro Doméstico)
     {"ticker": "DI1F29",  "exchange": "F"},   # Juros Futuros Jan/2029 (Contexto Macro Doméstico)
 ]
