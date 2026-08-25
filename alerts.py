@@ -46,13 +46,14 @@ _alert_logger = logging.getLogger("alerts")
 _alert_logger.setLevel(logging.DEBUG)
 _alert_logger.propagate = False  # não contaminar o logger raiz
 
+from logging.handlers import RotatingFileHandler
 if not _alert_logger.handlers:
-    _file_handler = TimedRotatingFileHandler(
+    _file_handler = RotatingFileHandler(
         filename=str(_LOG_DIR / "alerts.log"),
-        when="midnight",
-        interval=1,
-        backupCount=30,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
         encoding="utf-8",
+        delay=True,
     )
     _file_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(message)s",

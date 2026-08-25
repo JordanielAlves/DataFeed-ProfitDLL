@@ -1,4 +1,4 @@
-﻿"""
+"""
 sync_daily_ohlc.py
 Sincroniza e atualiza diariamente a tabela `daily_ohlc` no PostgreSQL
 a partir dos trades registrados na tabela `trades`.
@@ -48,6 +48,8 @@ def sync_daily_ohlc(target_date: date = None) -> int:
     cur = conn.cursor()
 
     if target_date is not None:
+        if isinstance(target_date, str):
+            target_date = datetime.strptime(target_date, "%Y-%m-%d").date()
         dates_to_sync = [target_date]
     else:
         cur.execute("SELECT MAX(date) FROM daily_ohlc WHERE ticker = 'WDOFUT'")
@@ -75,6 +77,8 @@ def sync_daily_ohlc(target_date: date = None) -> int:
     records = []
 
     for d in dates_to_sync:
+        if isinstance(d, str):
+            d = datetime.strptime(d, "%Y-%m-%d").date()
         d_start = datetime.combine(d, datetime.min.time())
         d_end = datetime.combine(d, datetime.max.time())
 
