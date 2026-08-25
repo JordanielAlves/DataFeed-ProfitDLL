@@ -1,5 +1,6 @@
 # Core dependency — all other imports are stdlib
 psycopg2-binary>=2.9.0
+yfinance>=0.2.0           # Contexto macro (DXY/SPX) — substitui tvDatafeed
 
 # Phase 4 (ML) — uncomment when needed
 # numpy>=1.24
