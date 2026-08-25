@@ -39,6 +39,7 @@ try:
 except ImportError:
     DB_DSN = "host=localhost port=5432 dbname=fluxo_ordens user=postgres password=postgres"
 
+from price_utils import to_real_points, format_price_b3
 from global_context import get_global_context
 from domestic_context import get_domestic_context
 
@@ -334,8 +335,8 @@ class MLLivePredictor:
         if not trade_data or not trade_data.get("n_trades") or trade_data["n_trades"] == 0:
             return None
 
-        open_p = float(trade_data["open_p"] or 0)
-        close_p = float(trade_data["close_p"] or 0)
+        open_p = to_real_points(trade_data.get("open_p"), ticker)
+        close_p = to_real_points(trade_data.get("close_p"), ticker)
         cvd_v = int(trade_data["cvd_varejo"] or 0)
         cvd_b = int(trade_data["cvd_big"] or 0)
         delta_p = round(close_p - open_p, 2)
@@ -528,7 +529,7 @@ class MLLivePredictor:
                 # Disparar renderizador gráfico Powerline
                 self.print_powerline_alert(
                     title=f"{ticker} | {msg_alerta}",
-                    price_str=f"PREÇO: {close_p:.2f} (Δ {delta_p:+.2f})",
+                    price_str=f"PREÇO: {format_price_b3(close_p, ticker)} (Δ {delta_p:+.2f} pts)",
                     extra_str=f"PROB / FORÇA: {prob_reversao}% ({strength})",
                     direction=direction,
                     agents_str=agents_str,

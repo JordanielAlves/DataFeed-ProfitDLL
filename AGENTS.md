@@ -1,14 +1,22 @@
 # Diretrizes e Regras do Projeto ProfitDLL / DataFeed B3
 
-## Regras Obrigatórias de Escala e Cotações de Preço (`trades` e `book_events`)
-1. **ESCALA DE PREÇO NO BANCO DE DADOS (PostgreSQL `fluxo_ordens`):**
-   - Os preços dos ativos na tabela `trades` e `book_events` são armazenados conforme o fator de escala ou formato em inteiros da DLL/Banco.
-   - **MUITO IMPORTANTE:** Para os contratos `WDO` (Mini Dólar) e `DOL` (Dólar Cheio), o valor armazenado na coluna `price` no banco de dados é **10 vezes** o valor real da cotação em pontos da B3!
-     - Exemplo: `price = 51150.00` no banco corresponde a **`5.115,00`** pontos na B3.
-     - Exemplo: `price = 51340.00` no banco corresponde a **`5.134,00`** pontos na B3.
-     - Exemplo: `price = 50995.00` no banco corresponde a **`5.099,50`** pontos na B3.
-   - Para os contratos `WIN` (Mini Índice) e `IND` (Índice Cheio), consulte a regra em `config.PRICE_SCALE_BY_PREFIX` (`WIN: 5`), pois a DLL pode retornar em ticks.
-   - **NUNCA** apresente ao usuário os valores brutos ou sem conversão sem antes verificar se o número faz sentido para a cotação real daquele dia. NUNCA mencione cotações sem dividir por 10 (para WDO/DOL) ou sem validar a escala correta.
+## Regras Obrigatórias de Escala, Armazenamento e Exibição de Preço
+
+1. **PADRONIZAÇÃO DE ARMAZENAMENTO NO BANCO DE DADOS (`fluxo_ordens`):**
+   - **Tabelas de Alta Frequência (`trades` e `book_events`):** Armazenam o preço nativo bruto da DLL para máxima performance de inserção.
+     - `WDO` / `DOL`: Preço bruto = **10× a cotação real da B3** (ex: `price = 51650.00` corresponde a **`5.165,00`** pontos).
+     - `WIN` / `IND`: Preço bruto = cotação em pontos (escala 1×).
+   - **Tabelas Quantitativas e Analíticas (`signals` e `daily_ohlc`):**
+     - A coluna `price_at_signal` na tabela `signals` armazena **SEMPRE EM PONTOS REAIS DA B3** (ex: `5165.00`).
+     - As colunas `open_p, high_p, low_p, close_p` em `daily_ohlc` armazenam **SEMPRE EM PONTOS REAIS DA B3**.
+
+2. **REGRA INVIOLÁVEL DE EXIBIÇÃO EM TELA / LOGS / RELATÓRIOS:**
+   - **TODA E QUALQUER EXIBIÇÃO DE COTAÇÃO AO USUÁRIO DEVE ESTAR EM PONTOS REAIS FORMATADOS NO PADRÃO BRASILEIRO:**
+     - Exemplo Dólar: **`5.160,00`**, **`5.160,50`**, **`5.161,00`**, **`5.161,50`**.
+     - Exemplo Índice: **`134.500`**, **`134.505`**.
+     - Exemplo Juros: **`13,725%`**.
+   - Utilize sempre o módulo centralizador `price_utils.py` (`from price_utils import to_real_points, format_price_b3`).
+   - **NUNCA** apresente cotações em notação crua/americana como `5165.0` ou `51650.00` em relatórios, prints ou mensagens de Telegram.
 
 2. **CONSULTA OBRIGATÓRIA ANTES DE RESPONDER:**
    - Antes de responder qualquer pergunta sobre cotações, faixas de preço, aberturas, máximas, mínimas ou rompimentos em determinado dia/horário, o agente **DEVE SEMPRE** executar uma consulta SQL via Python (`psycopg2` ou `pandas`) no banco de dados para checar:
