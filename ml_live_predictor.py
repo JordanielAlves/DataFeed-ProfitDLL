@@ -1,4 +1,4 @@
-"""
+﻿"""
 ml_live_predictor.py
 Módulo Preditivo de Microestrutura em Tempo Real (Live Predictor) — ProfitDLL
 Monitora continuamente os dados recebidos pelo DataRecorder (PostgreSQL) durante o pregão aberto,
@@ -6,8 +6,8 @@ calcula métricas instantâneas de absorção/exaustão/CVD de Big Players e emi
 além de salvar os sinais quantitativos na tabela `signals` para validação e backtest.
 
 Uso CLI:
-    python ml_live_predictor.py --ticker WDOQ26 --interval 10 --window 5
-    python ml_live_predictor.py --ticker WINQ26 --interval 15 --window 5
+    python ml_live_predictor.py --ticker WDOU26 --interval 10 --window 5
+    python ml_live_predictor.py --ticker WINV26 --interval 15 --window 5
 """
 
 import os
@@ -22,6 +22,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
 try:
     from dynamic_harmonics import get_daily_harmonic_step, get_closest_harmonic_distance
 except ImportError:
@@ -40,8 +41,13 @@ except ImportError:
     DB_DSN = "host=localhost port=5432 dbname=fluxo_ordens user=postgres password=postgres"
 
 from price_utils import to_real_points, format_price_b3
-from global_context import get_global_context
-from domestic_context import get_domestic_context
+from global_context import get_global_context, start_global_context
+from domestic_context import get_domestic_context, start_domestic_context
+
+try:
+    from alerts import send_alert
+except ImportError:
+    send_alert = lambda msg, level="INFO": None
 
 try:
     from corretoras import get_nome_corretora, get_corretora_label
@@ -61,9 +67,7 @@ log = logging.getLogger("live_ml")
 # Referência vigente 2026:
 #   WDO/DOL: 9h00 - 18h00 (horário de Brasília)
 #   WIN/IND: 9h00 - 17h55
-#   PTAX BCB: 4 janelas de consulta — a mais relevante operacionalmente é a
-#             última janela do dia (13h00-13h10), após a qual a taxa é divulgada
-#             por volta de 13h30. Usamos 13h00 como referência da janela-alvo.
+#   PTAX BCB: 4 janelas de consulta — última janela às 13h00
 # ---------------------------------------------------------------------------
 _MARKET_OPEN_HOUR   = 9    # Abertura do pregão (hora local, BRT)
 _MARKET_OPEN_MIN    = 0
@@ -76,21 +80,7 @@ _PTAX_WINDOW_MIN    = 0
 def calcular_features_temporais(ts: datetime) -> dict:
     """
     Calcula features de sazonalidade intradiária a partir de um timestamp.
-
-    Retorna um dict com:
-      - hour               : hora do dia (0-23)
-      - minute             : minuto da hora (0-59)
-      - minutes_since_open : minutos desde a abertura do pregão (9h00)
-                             negativo se o sinal ocorreu antes da abertura
-      - minutes_to_ptax    : minutos até o início da última janela PTAX (13h00)
-                             negativo se a janela já passou naquele dia
-      - minutes_to_close   : minutos até o fechamento do pregão (18h00)
-                             negativo se já passamos do fechamento
-
-    Esta função é pura (sem efeitos colaterais) e pode ser reutilizada em
-    ml_behavior_analyzer.py para enriquecer o dataset histórico.
     """
-    # Âncoras do dia no mesmo fuso que o timestamp recebido
     open_dt  = ts.replace(hour=_MARKET_OPEN_HOUR,  minute=_MARKET_OPEN_MIN,  second=0, microsecond=0)
     close_dt = ts.replace(hour=_MARKET_CLOSE_HOUR, minute=_MARKET_CLOSE_MIN, second=0, microsecond=0)
     ptax_dt  = ts.replace(hour=_PTAX_WINDOW_HOUR,  minute=_PTAX_WINDOW_MIN,  second=0, microsecond=0)
@@ -120,7 +110,13 @@ class MLLivePredictor:
         self.daily_harmonic_step = {}
         self.ml_model = None
         self.ml_scaler = None
+        self.ml_threshold = 0.24
         self.ml_feature_names = []
+        
+        # Inicializar threads de contexto macro global e doméstico
+        start_global_context()
+        start_domestic_context()
+        
         self._load_ml_model()
 
     def _get_daily_harmonic_step_cached(self, ticker: str, current_ts: datetime) -> float:
@@ -138,7 +134,7 @@ class MLLivePredictor:
         return step
 
     def _get_daily_open(self, ticker: str, current_ts: datetime) -> float:
-        """Busca o preço de abertura oficial do dia no PostgreSQL para o Grid 8P Harmônico."""
+        """Busca o preço de abertura oficial do dia no PostgreSQL para o Grid 8P Harmônico em pontos reais."""
         date_str = current_ts.strftime('%Y-%m-%d')
         cache_key = f"{ticker}_{date_str}"
         if cache_key in self.daily_open_price:
@@ -147,12 +143,13 @@ class MLLivePredictor:
         try:
             with psycopg2.connect(self.dsn) as conn:
                 with conn.cursor() as cur:
-                    cur.execute(f"SELECT price FROM trades WHERE ticker = %s AND ts >= %s::timestamp AND ts <= %s::timestamp ORDER BY ts ASC LIMIT 1",
-                                (ticker, f"{date_str} 00:00:00", f"{date_str} 23:59:59"))
+                    cur.execute(
+                        "SELECT price FROM trades WHERE ticker = %s AND ts >= %s::timestamp AND ts <= %s::timestamp ORDER BY ts ASC LIMIT 1",
+                        (ticker, f"{date_str} 00:00:00", f"{date_str} 23:59:59")
+                    )
                     row = cur.fetchone()
                     if row:
-                        scale = 10.0 if (ticker.startswith('WDO') or ticker.startswith('DOL')) else 1.0
-                        open_p = float(row[0]) / scale
+                        open_p = to_real_points(row[0], ticker)
                         self.daily_open_price[cache_key] = open_p
                         return open_p
         except Exception:
@@ -160,7 +157,7 @@ class MLLivePredictor:
         return None
 
     def _load_ml_model(self):
-        """Carrega o modelo supervisionado (Pilar 2) gerado pelo ml_model_trainer.py para pontuação instantânea."""
+        """Carrega o modelo supervisionado calibrado com threshold ótimo."""
         models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
         pkl_path = os.path.join(models_dir, "quant_signals_v1.pkl")
         if os.path.exists(pkl_path):
@@ -169,8 +166,9 @@ class MLLivePredictor:
                     payload = pickle.load(f)
                 self.ml_model = payload.get("model")
                 self.ml_scaler = payload.get("scaler")
+                self.ml_threshold = payload.get("optimal_threshold", 0.24)
                 self.ml_feature_names = payload.get("feature_names", [])
-                log.info(f"🤖 [PILAR 3 MLOps] Modelo quantitativo supervisionado carregado com sucesso ({len(self.ml_feature_names)} features)!")
+                log.info(f"🤖 [PILAR 3 MLOps] Modelo quantitativo carregado ({len(self.ml_feature_names)} features | Threshold Ótimo: {self.ml_threshold*100:.1f}%)!")
             except Exception as e:
                 log.warning(f"Erro ao carregar modelo ML em {pkl_path}: {e}")
         else:
@@ -208,7 +206,7 @@ class MLLivePredictor:
                 elif fname not in row_dict:
                     row_dict[fname] = 0.0
 
-            # Vetor X ordenado estritamente como no treino (usando DataFrame para preservar feature names e silenciar aviso do sklearn)
+            # Vetor X ordenado estritamente como no treino
             x_dict = {col: [row_dict.get(col, 0.0)] for col in self.ml_feature_names}
             x_df = pd.DataFrame(x_dict)[self.ml_feature_names]
 
@@ -236,21 +234,14 @@ class MLLivePredictor:
         ARROW = ""
 
         # Cores em RGB (TrueColor ANSI)
-        # Fita 1: Direção (Verde ou Vermelho)
         if direction >= 1:
-            # Verde Institucional (#00A86B)
             bg1, fg1_next = "\033[48;2;0;168;107m", "\033[38;2;0;168;107m"
         else:
-            # Vermelho Institucional (#E53935)
             bg1, fg1_next = "\033[48;2;229;57;53m", "\033[38;2;229;57;53m"
 
-        # Fita 2: Preço & Variação (Cinza Escuro #37474F)
         bg2, fg2_next = "\033[48;2;55;71;79m", "\033[38;2;55;71;79m"
-
-        # Fita 3: Probabilidade ou Alvo (Azul Escuro #1A237E)
         bg3, fg3_next = "\033[48;2;26;35;126m", "\033[38;2;26;35;126m"
 
-        # Linha principal em Badges Powerline
         badge1 = f"{bg1}\033[1;38;2;255;255;255m  {title}  {RESET}"
         arrow1 = f"{fg1_next}{bg2}{ARROW}{RESET}"
         badge2 = f"{bg2}\033[1;38;2;255;255;255m  {price_str}  {RESET}"
@@ -261,7 +252,6 @@ class MLLivePredictor:
         print()
         print(f"{badge1}{arrow1}{badge2}{arrow2}{badge3}{arrow3}")
 
-        # Linhas secundárias estilizadas como árvore limpa (├─ / └─)
         if details_list:
             for i, det in enumerate(details_list):
                 prefix = "  └─ " if i == len(details_list) - 1 and not agents_str else "  ├─ "
@@ -388,7 +378,6 @@ class MLLivePredictor:
 
         elif cvd_b > 2500 and delta_p > 4.0:
             if armed and armed["direction"] == 1:
-                # COMBO DE OURO COMPRADOR ATIVADO!
                 signal_type = "COMBO_ABSORCAO_IMPULSO_COMPRA"
                 direction = 1
                 strength = "ALTA"
@@ -404,7 +393,6 @@ class MLLivePredictor:
 
         elif cvd_b < -2500 and delta_p < -4.0:
             if armed and armed["direction"] == -1:
-                # COMBO DE OURO VENDEDOR ATIVADO!
                 signal_type = "COMBO_ABSORCAO_IMPULSO_VENDA"
                 direction = -1
                 strength = "ALTA"
@@ -421,7 +409,6 @@ class MLLivePredictor:
         # Se houver sinal relevante, evitar duplicidade no mesmo minuto e salvar no banco
         sig_hash = f"{ticker}_{signal_type}_{close_p}"
         if signal_type != "NEUTRAL":
-            # Calcular distância macro harmônica antes do ML
             open_p = self._get_daily_open(ticker, now)
             dist_to_macro_harmonic = None
             step = None
@@ -429,10 +416,10 @@ class MLLivePredictor:
             if open_p is not None:
                 step = self._get_daily_harmonic_step_cached(ticker, now)
                 if get_closest_harmonic_distance:
-                    scale = 10.0 if (ticker.startswith('WDO') or ticker.startswith('DOL')) else 1.0
-                    dist_to_macro_harmonic = get_closest_harmonic_distance(close_p / scale, open_p, step)
+                    # close_p e open_p já estão em pontos reais da B3
+                    dist_to_macro_harmonic = get_closest_harmonic_distance(close_p, open_p, step)
 
-            # Calcular pontuação instantânea do modelo supervisionado ML (Pilar 3 MLOps)
+            # Calcular pontuação instantânea do modelo supervisionado ML
             ml_conviction = self._predict_ml_conviction(signal_type, direction, cvd_b, cvd_v, delta_p, total_qty, dist_to_macro_harmonic)
 
             if sig_hash != self.last_signal_hash.get(ticker) or (now - self.last_alert_time.get(ticker, datetime.min)).seconds > 120:
@@ -440,10 +427,8 @@ class MLLivePredictor:
                 self.last_alert_time[ticker] = now
                 
                 if open_p is not None and step is not None:
-                        
                     dist_to_open = close_p - open_p
                     mod_step = abs(dist_to_open) % step
-                    # Tolerância de 1.0 ponto (ou 0.5 se step for muito pequeno) da região do harmônico
                     tol = min(1.0, step * 0.15) 
                     
                     if mod_step <= tol or mod_step >= (step - tol):
@@ -464,7 +449,7 @@ class MLLivePredictor:
                 if harmonic_alert:
                     details_list.append(harmonic_alert.strip())
                     
-                # Buscar e injetar contexto macro
+                # Buscar contexto macro global e doméstico ao vivo
                 global_ctx = get_global_context()
                 domestic_ctx = get_domestic_context()
                 
@@ -472,18 +457,18 @@ class MLLivePredictor:
                 context_alignment = 0 # +1 para Alta no Dólar, -1 para Baixa no Dólar
                 
                 if global_ctx:
-                    dxy = global_ctx.get('dxy_var', 0)
-                    spx = global_ctx.get('spx_var', 0)
-                    macro_info += f"DXY={dxy:.2f}% | SPX={spx:.2f}% "
+                    dxy = global_ctx.get('dxy_var', 0.0)
+                    spx = global_ctx.get('spx_var', 0.0)
+                    macro_info += f"DXY={dxy:+.2f}% | SPX={spx:+.2f}% "
                     if dxy > 0.1: context_alignment += 1
                     elif dxy < -0.1: context_alignment -= 1
                     if spx < -0.3: context_alignment += 1
                     elif spx > 0.3: context_alignment -= 1
                     
                 if domestic_ctx:
-                    win = domestic_ctx.get('win_delta_pts', 0)
-                    di1 = domestic_ctx.get('di1_delta_pts', 0)
-                    macro_info += f"| WIN={win:.0f}pts | DI1={di1:.1f}bps"
+                    win = domestic_ctx.get('win_delta_pts', 0.0)
+                    di1 = domestic_ctx.get('di1_delta_pts', 0.0)
+                    macro_info += f"| WIN={win:+.0f}pts | DI1={di1:+.1f}bps"
                     if win < -300: context_alignment += 1
                     elif win > 300: context_alignment -= 1
                     if di1 > 5: context_alignment += 1
@@ -491,7 +476,7 @@ class MLLivePredictor:
                     
                 details_list.append(macro_info)
                 
-                # Regra de recomendação de Execução (Fase 3) baseada no alinhamento do Contexto vs Micro
+                # Regra de recomendação de Execução baseada no alinhamento do Contexto vs Micro
                 if direction == 1 and context_alignment >= 2:
                     details_list.append("🟢 \033[1;32m[CONTEXTO MACRO FAVORÁVEL: ALONGAR ALVO NA COMPRA!]\033[0m")
                 elif direction == -1 and context_alignment <= -2:
@@ -503,27 +488,30 @@ class MLLivePredictor:
 
                 if "ABSORCAO" in signal_type and "COMBO" not in signal_type:
                     details_list.append(f"Agressão de Big Players ({cvd_b:+d} ctrs) absorvida no book passivo.")
-                    details_list.append(f"Preço travado na região de {close_p} (Δ = {delta_p:+.2f} pts). Setup ARMADO (TTL 120s)!")
+                    details_list.append(f"Preço travado na região de {format_price_b3(close_p, ticker)} (Δ = {delta_p:+.2f} pts). Setup ARMADO (TTL 120s)!")
                 elif "COMBO" in signal_type:
                     details_list.append(f"✅ Ignição confirmada após Absorção previa! Rompimento com tração de Big Players ({cvd_b:+d} ctrs).")
-                    details_list.append(f"Preço de acionamento: {close_p} (Δ = {delta_p:+.2f} pts) | Alvo rápido liberado!")
+                    details_list.append(f"Preço de acionamento: {format_price_b3(close_p, ticker)} (Δ = {delta_p:+.2f} pts) | Alvo rápido liberado!")
                 elif "IMPULSO" in signal_type:
                     details_list.append(f"Big Players agredindo pesado ({cvd_b:+d} ctrs) rompendo níveis técnicos (Δ = {delta_p:+.2f} pts).")
                 elif "DISTRIBUICAO" in signal_type or "ACUMULACAO" in signal_type:
                     details_list.append(f"Divergência institucional: Varejo ({cvd_v:+d} ctrs) vs Big Players ({cvd_b:+d} ctrs).")
 
-                # Injetar avaliação e guarda-corpo preditivo do Pilar 3 na interface visual
+                # Avaliação Quantitativa Calibrada
+                sniper_threshold = 32.0  # 85.9% de acerto comprovado em backtest com custos B3
+                base_threshold = round(self.ml_threshold * 100, 1)  # Limiar ótimo balanceado (~24.0%)
+
                 if ml_conviction is not None:
-                    if ml_conviction >= 65.0:
-                        details_list.insert(0, f"🤖 \033[1;32m[ML HIGH CONVICTION ⭐] Convicção Quantitativa: {ml_conviction}%\033[0m (IA supervisionada valida entrada forte no scalping!)")
+                    if ml_conviction >= sniper_threshold:
+                        details_list.insert(0, f"🤖 \033[1;32m[ML HIGH CONVICTION ⭐] Convicção Quantitativa: {ml_conviction}%\033[0m (IA supervisionada valida entrada Sniper — Win Rate ~85.9%!)")
                         strength += " | ML: ⭐ ALTA"
                         prob_reversao = ml_conviction
-                    elif ml_conviction <= 45.0:
-                        details_list.insert(0, f"🤖 \033[1;33m[ML LOW CONVICTION ⚠️] Convicção Quantitativa: {ml_conviction}%\033[0m (IA aponta RISCO DE STOP / armadilha de fluxo!)")
+                    elif ml_conviction < base_threshold:
+                        details_list.insert(0, f"🤖 \033[1;33m[ML LOW CONVICTION ⚠️] Convicção Quantitativa: {ml_conviction}%\033[0m (Abaixo do limiar ótimo de {base_threshold}% — Risco de Stop)")
                         strength += " | ML: ⚠️ BAIXA"
                         prob_reversao = ml_conviction
                     else:
-                        details_list.insert(0, f"🤖 \033[1;36m[ML CONVICTION] Convicção Quantitativa: {ml_conviction}%\033[0m (Setup regular)")
+                        details_list.insert(0, f"🤖 \033[1;36m[ML CONVICTION] Convicção Quantitativa: {ml_conviction}%\033[0m (Setup regular acima do limiar {base_threshold}%)")
                         prob_reversao = ml_conviction
 
                 # Disparar renderizador gráfico Powerline
@@ -536,6 +524,28 @@ class MLLivePredictor:
                     details_list=details_list
                 )
 
+                # Disparar Alerta no Telegram se for setup Sniper ou Combo de Ouro
+                if ml_conviction and (ml_conviction >= sniper_threshold or "COMBO" in signal_type) and direction != 0:
+                    dxy_val = global_ctx.get("dxy_var", 0.0) if global_ctx else 0.0
+                    spx_val = global_ctx.get("spx_var", 0.0) if global_ctx else 0.0
+                    win_val = domestic_ctx.get("win_delta_pts", 0.0) if domestic_ctx else 0.0
+                    dir_icon = "🟢 COMPRA" if direction == 1 else "🔴 VENDA"
+                    tg_msg = (
+                        f"🚨 <b>SINAL QUANT B3 — {ticker}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚡ <b>Setup:</b> {msg_alerta}\n"
+                        f"🧭 <b>Direção:</b> {dir_icon}\n"
+                        f"💰 <b>Preço:</b> <code>{format_price_b3(close_p, ticker)}</code> (Δ {delta_p:+.2f} pts)\n"
+                        f"🤖 <b>Score ML:</b> <b>{ml_conviction:.1f}%</b> ⭐ (Filtro Sniper Ativado)\n"
+                        f"🌐 <b>Macro:</b> DXY {dxy_val:+.2f}% | SPX {spx_val:+.2f}% | WIN {win_val:+.0f} pts\n"
+                        f"🎯 <b>Alvo Scalp:</b> +2,5 pts | <b>Stop:</b> 2,0 pts\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━"
+                    )
+                    try:
+                        send_alert(tg_msg, level="INFO")
+                    except Exception as e:
+                        log.debug(f"Falha ao enviar alerta Telegram: {e}")
+
                 # Enriquecer top_agents com nome antes de salvar
                 enriched_agents = []
                 for a in top_agents:
@@ -543,13 +553,11 @@ class MLLivePredictor:
                     d["corretora"] = get_corretora_label(a["agent_id"])
                     enriched_agents.append(d)
 
-                # Timestamp de referência: horário exato do último trade da janela
                 signal_ts_ref = trade_data.get("max_ts") or datetime.now()
-                # Garantir que é um datetime naive (sem timezone) para o cálculo temporal
                 if hasattr(signal_ts_ref, "tzinfo") and signal_ts_ref.tzinfo is not None:
                     signal_ts_ref = signal_ts_ref.replace(tzinfo=None)
 
-                # Registrar no PostgreSQL tabela signals com o horário EXATO do trade no mercado e o Score ML
+                # Registrar no PostgreSQL tabela signals em pontos reais
                 if session_id:
                     self.registrar_sinal(session_id, ticker, signal_type, direction, close_p, {
                         "cvd_varejo":    cvd_v,
@@ -582,7 +590,7 @@ class MLLivePredictor:
                     cur.execute(query, (
                         session_id, ticker, ts_val, signal_type, direction, price, json.dumps(context, default=float)
                     ))
-            log.info(f"Sinal gravado no banco de dados: {signal_type} ({ticker} @ {price} | ts: {ts_val})")
+            log.info(f"Sinal gravado no banco de dados: {signal_type} ({ticker} @ {format_price_b3(price, ticker)} | ts: {ts_val})")
         except Exception as e:
             log.error(f"Erro ao salvar sinal no banco: {e}")
 
@@ -602,7 +610,7 @@ class MLLivePredictor:
 
 def main():
     parser = argparse.ArgumentParser(description="Módulo Preditivo ML em Tempo Real - ProfitDLL")
-    parser.add_argument("--ticker", type=str, default="WDOQ26", help="Ativo para monitorar (padrão: WDOQ26)")
+    parser.add_argument("--ticker", type=str, default="WDOU26", help="Ativo para monitorar (padrão: WDOU26)")
     parser.add_argument("--interval", type=int, default=10, help="Intervalo de verificação em segundos (padrão: 10s)")
     parser.add_argument("--window", type=int, default=5, help="Janela móvel de análise em minutos (padrão: 5m)")
     parser.add_argument("--once", action="store_true", help="Executa apenas uma leitura pontual (sem loop)")

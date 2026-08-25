@@ -11,11 +11,6 @@ from datetime import date, datetime, timedelta
 import psycopg2
 from config import DB_DSN
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] sync_ohlc — %(message)s",
-    datefmt="%H:%M:%S"
-)
 log = logging.getLogger("sync_ohlc")
 
 

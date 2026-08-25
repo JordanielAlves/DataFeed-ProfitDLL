@@ -1,7 +1,7 @@
 ﻿"""
 global_context.py
 Mantém o contexto macroeconômico global atualizado em background.
-Busca DXY (Índice do Dólar) e SPX (S&P 500) via yfinance (API oficial do Yahoo Finance).
+Busca DXY (Índice do Dólar) e SPX (S&P 500) via yfinance (API do Yahoo Finance).
 """
 
 import time
@@ -46,6 +46,7 @@ class GlobalContextManager:
             return
         if not self._running:
             self._running = True
+            # Inicia thread em background
             self._thread = threading.Thread(
                 target=self._loop, daemon=True, name="GlobalContextThread"
             )
@@ -58,7 +59,7 @@ class GlobalContextManager:
             self._thread.join(timeout=3)
 
     def _loop(self):
-        # Atualizar imediatamente ao iniciar, depois a cada intervalo
+        # Atualizar imediatamente ao iniciar
         self._update_all()
         while self._running:
             time.sleep(self.update_interval_sec)
@@ -99,7 +100,9 @@ class GlobalContextManager:
             log.debug(f"Erro no loop de Global Context: {e}")
 
     def get_context(self) -> dict:
-        """Retorna o contexto global instantâneo."""
+        """Retorna o contexto global instantâneo, garantindo que o serviço esteja ativo."""
+        if not self._running and self._yf_available:
+            self.start()
         return {
             "dxy_var":    self.dxy_var,
             "spx_var":    self.spx_var,
@@ -125,10 +128,9 @@ def get_global_context():
     return _global_context.get_context()
 
 
-# Teste rápido: python global_context.py
 if __name__ == "__main__":
     import json
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
-    mgr = GlobalContextManager()
-    mgr._update_all()
-    print(json.dumps(mgr.get_context(), indent=2, default=str))
+    start_global_context()
+    time.sleep(2)
+    print(json.dumps(get_global_context(), indent=2, default=str))
