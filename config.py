@@ -48,7 +48,7 @@ PROFIT = {
 ASSETS = [
     # Contratos vigentes:
     {"ticker": "WDOU26",  "exchange": "F"},   # Mini Dólar — Vencimento Setembro/26
- #   {"ticker": "WINV26",  "exchange": "F"},   # Mini Índice — Vencimento Outubro/26
+    {"ticker": "WINV26",  "exchange": "F"},   # Mini Índice — Vencimento Outubro/26
     {"ticker": "DI1F27",  "exchange": "F"},   # Juros Futuros Jan/2027 (Contexto Macro Doméstico)
     {"ticker": "DI1F29",  "exchange": "F"},   # Juros Futuros Jan/2029 (Contexto Macro Doméstico)
 ]
@@ -117,9 +117,9 @@ ANALYSIS = {
 #   4. Preencha token e chat_id abaixo e mude enabled para True
 # ---------------------------------------------------------------------------
 TELEGRAM = {
-    "token":    os.getenv("TELEGRAM_TOKEN",   ""),   # ex: "7123456789:AAFxxxxxx"
-    "chat_id":  os.getenv("TELEGRAM_CHAT_ID", ""),   # ex: "123456789"
-    "enabled":  False,   # mudar para True após configurar token e chat_id
+    "token":    os.getenv("TELEGRAM_TOKEN",   "7727008670:AAGTlYAZzFemdCfUlJQMJ-UFiub28rDozgM"),   # ex: "7123456789:AAFxxxxxx"
+    "chat_id":  os.getenv("TELEGRAM_CHAT_ID", "894006960"),   # ex: "123456789"
+    "enabled":  True,   # mudar para True após configurar token e chat_id
 }
 
 # ---------------------------------------------------------------------------

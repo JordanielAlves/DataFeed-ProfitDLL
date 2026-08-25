@@ -14,7 +14,7 @@ Para que o sistema consiga avisar você sobre quedas (watchdog) e a qualidade do
 2. Envie o comando `/newbot`. Ele pedirá um nome e um username para o seu bot.
 3. Ao finalizar, o BotFather enviará um **TOKEN** (exemplo: `7123456789:AAFxxxxxx...`).
 4. Para descobrir o seu ID pessoal, busque no Telegram por **@userinfobot** e inicie uma conversa. Ele mostrará o seu `Id` (exemplo: `123456789`).
-5. Alternativamente, mande um "Oi" para o seu novo bot recém criado, e acesse no navegador: `https://api.telegram.org/bot<SEU_TOKEN_AQUI>/getUpdates` para achar seu chat ID.
+5. Alternativamente, mande um "Oi" para o seu novo bot recém criado, e acesse no navegador: `https://api.telegram.org/bot7727008670:AAGTlYAZzFemdCfUlJQMJ-UFiub28rDozgM/getUpdates` para achar seu chat ID.
 6. Abra o arquivo `C:\DEV\ProfitDLL\config.py`, localize o bloco `TELEGRAM` no final do arquivo e preencha:
    ```python
    TELEGRAM = {

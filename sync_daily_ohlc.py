@@ -60,7 +60,7 @@ def sync_daily_ohlc(target_date: date = None) -> int:
         cur.execute("""
             SELECT DISTINCT ts::date 
             FROM trades 
-            WHERE ticker LIKE 'WDO%' AND ts::date >= %s
+            WHERE ticker LIKE 'WDO%%' AND ts::date >= %s
             ORDER BY ts::date ASC;
         """, (last_date,))
         dates_to_sync = [r[0] for r in cur.fetchall()]
@@ -81,7 +81,7 @@ def sync_daily_ohlc(target_date: date = None) -> int:
         cur.execute("""
             SELECT MIN(price), MAX(price), COUNT(*)
             FROM trades
-            WHERE ticker LIKE 'WDO%' AND ts >= %s AND ts <= %s;
+            WHERE ticker LIKE 'WDO%%' AND ts >= %s AND ts <= %s;
         """, (d_start, d_end))
         row = cur.fetchone()
         if not row or row[0] is None or row[2] == 0:
@@ -93,7 +93,7 @@ def sync_daily_ohlc(target_date: date = None) -> int:
 
         cur.execute("""
             SELECT price FROM trades
-            WHERE ticker LIKE 'WDO%' AND ts >= %s AND ts <= %s
+            WHERE ticker LIKE 'WDO%%' AND ts >= %s AND ts <= %s
             ORDER BY ts ASC LIMIT 1;
         """, (d_start, d_end))
         open_raw = cur.fetchone()[0]
@@ -101,7 +101,7 @@ def sync_daily_ohlc(target_date: date = None) -> int:
 
         cur.execute("""
             SELECT price FROM trades
-            WHERE ticker LIKE 'WDO%' AND ts >= %s AND ts <= %s
+            WHERE ticker LIKE 'WDO%%' AND ts >= %s AND ts <= %s
             ORDER BY ts DESC LIMIT 1;
         """, (d_start, d_end))
         close_raw = cur.fetchone()[0]
