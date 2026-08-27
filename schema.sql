@@ -48,6 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_trades_buy_agent    ON trades (buy_agent, ts);
 CREATE INDEX IF NOT EXISTS idx_trades_sell_agent   ON trades (sell_agent, ts);
 CREATE INDEX IF NOT EXISTS idx_trades_price        ON trades (ticker, price);
 CREATE INDEX IF NOT EXISTS idx_trades_trade_number ON trades (trade_number);
+CREATE INDEX IF NOT EXISTS idx_trades_session_id   ON trades (session_id);
 
 -- ---------------------------------------------------------------------------
 -- Eventos de book de ofertas
@@ -188,10 +189,11 @@ ORDER BY i.renewals DESC, i.total_qty DESC;
 -- Dados EOD (End of Day) para cálculo de volatilidade adaptativa
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS daily_ohlc (
-    date        DATE PRIMARY KEY,
+    date        DATE NOT NULL,
     ticker      VARCHAR(20) NOT NULL,
     open_p      NUMERIC(12,2),
     high_p      NUMERIC(12,2),
     low_p       NUMERIC(12,2),
-    close_p     NUMERIC(12,2)
+    close_p     NUMERIC(12,2),
+    PRIMARY KEY (date, ticker)
 );

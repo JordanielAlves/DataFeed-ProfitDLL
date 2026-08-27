@@ -1,4 +1,4 @@
-﻿"""
+"""
 global_context.py
 Mantém o contexto macroeconômico global atualizado em background.
 Busca DXY (Índice do Dólar) e SPX (S&P 500) via yfinance (API do Yahoo Finance).
@@ -35,7 +35,9 @@ class GlobalContextManager:
         self._yf_available = False
 
         try:
-            import yfinance  # noqa: F401
+            import yfinance as yf  # noqa: F401
+            logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+            logging.getLogger("urllib3").setLevel(logging.CRITICAL)
             self._yf_available = True
             log.info("yfinance inicializado — contexto macro DXY/SPX ativo.")
         except ImportError:
