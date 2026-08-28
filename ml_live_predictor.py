@@ -1,4 +1,4 @@
-﻿"""
+"""
 ml_live_predictor.py
 Módulo Preditivo de Microestrutura em Tempo Real com Inteligência Adaptativa — ProfitDLL
 Monitora continuamente os dados recebidos pelo DataRecorder (PostgreSQL) durante o pregão aberto,
@@ -443,6 +443,18 @@ class MLLivePredictor:
         if is_exhausted and ml_conviction is not None:
             ml_conviction = round(ml_conviction * 0.65, 1)
 
+        # 5.1 FILTRO DE ZONA DE MIOLO (CHOP ZONE FILTER)
+        # Em caixotes / lateralidade ampla, absorções no miolo (35% a 65% do range) com baixa convicção são ruído puro
+        is_chop = regime_info.get("is_chop_zone", False)
+        base_threshold = round(self.ml_threshold * 100, 1)
+        if is_chop and "ABSORCAO" in signal_type and "COMBO" not in signal_type:
+            if ml_conviction is None or ml_conviction < base_threshold:
+                log.debug(
+                    f"[CHOP ZONE FILTER] Sinal de absorção de miolo suprimido: {signal_type} @ {close_p} "
+                    f"(Pos={regime_info.get('relative_pos'):.2f} | ML={ml_conviction}%)"
+                )
+                return signal_type
+
         # 6. Teste de Níveis de Harmônicos
         if day_open is not None and step is not None:
             dist_to_open = close_p - day_open
@@ -512,6 +524,22 @@ class MLLivePredictor:
             details_list.append(f"Big Players agredindo pesado ({cvd_b:+d} ctrs) rompendo níveis técnicos (Δ = {delta_p:+.2f} pts).")
         elif "DISTRIBUICAO" in signal_type or "ACUMULACAO" in signal_type:
             details_list.append(f"Divergência institucional: Varejo ({cvd_v:+d} ctrs) vs Big Players ({cvd_b:+d} ctrs).")
+            if signal_type == "DISTRIBUICAO_TOPO":
+                stop_ref = (day_high or close_p) + 1.0
+                if step and day_open:
+                    dist_to_open = close_p - day_open
+                    next_harm = day_open + (int(dist_to_open / step) + 1) * step if dist_to_open >= 0 else day_open
+                    if next_harm > close_p:
+                        stop_ref = max(stop_ref, next_harm + 1.0)
+                details_list.append(f"🎯 \033[1;36m[STOP TÉCNICO SUGERIDO: ACIMA DE {format_price_b3(stop_ref, ticker)} (PROTEÇÃO CONTRA SWEEP DE LIQUIDEZ)]\033[0m")
+            elif signal_type == "ACUMULACAO_FUNDO":
+                stop_ref = (day_low or close_p) - 1.0
+                if step and day_open:
+                    dist_to_open = close_p - day_open
+                    next_harm = day_open + (int(dist_to_open / step) - 1) * step if dist_to_open <= 0 else day_open
+                    if next_harm < close_p:
+                        stop_ref = min(stop_ref, next_harm - 1.0)
+                details_list.append(f"🎯 \033[1;36m[STOP TÉCNICO SUGERIDO: ABAIXO DE {format_price_b3(stop_ref, ticker)} (PROTEÇÃO CONTRA SWEEP DE LIQUIDEZ)]\033[0m")
 
         # 8. Avaliação Quantitativa Calibrada
         sniper_threshold = 32.0

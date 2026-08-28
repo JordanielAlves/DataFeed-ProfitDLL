@@ -1,4 +1,4 @@
-﻿"""
+"""
 spatial_cooldown.py
 Gerenciador de Cooldown Espacial e Agregação de Sinais por Faixa de Preço — ProfitDLL
 Elimina a repetição de múltiplos alertas (spam) para o mesmo evento de microestrutura
@@ -48,9 +48,12 @@ class SpatialCooldownManager:
         tol = tolerance_pts if tolerance_pts is not None else self.default_tolerance_pts
         ttl = ttl_seconds if ttl_seconds is not None else self.default_ttl_sec
 
-        # Para absorções e distribuições, o cooldown espacial é estrito
-        # Para impulsos/rompimentos, a tolerância de preço é mais justa (1.0 pt)
-        if "IMPULSO" in signal_type:
+        # Para exaustão e distribuição/acumulação em extremos, tolerância espacial ampliada (3.5 pts)
+        if "IMPULSO_ESTENDIDO" in signal_type or "DISTRIBUICAO" in signal_type or "ACUMULACAO" in signal_type:
+            tol = max(tol, 3.5)
+            ttl = max(ttl, 120)
+        # Para impulsos/rompimentos simples, a tolerância de preço é mais justa (1.0 pt)
+        elif "IMPULSO" in signal_type:
             tol = min(tol, 1.0)
             ttl = min(ttl, 60)
 

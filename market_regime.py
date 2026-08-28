@@ -1,4 +1,4 @@
-﻿"""
+"""
 market_regime.py
 Módulo de Detecção Adaptativa de Regime de Mercado — ProfitDLL
 Analisa a amplitude acumulada do dia, volatilidade em relação ao harmônico
@@ -137,11 +137,21 @@ class MarketRegimeDetector:
             rec_gain = 2.5
             rec_stop = 2.0
 
+        # Posição relativa do preço dentro do range do dia (0.0 = mínima, 1.0 = máxima)
+        ref_price = day_last if day_last is not None else day_open
+        relative_pos = round((ref_price - day_low) / max(0.5, day_range), 2) if day_range > 0 else 0.5
+        relative_pos = max(0.0, min(1.0, relative_pos))
+
+        # Zona de Miolo / Chop: Terço central do range em dias de caixote / lateralidade
+        is_chop_zone = (0.35 <= relative_pos <= 0.65) and (regime in ["CONSOLIDACAO_ESTREITA", "LATERALIDADE_AMPLA"])
+
         data = {
             "regime": regime,
             "day_range": day_range,
             "harmonic_step": step,
             "range_ratio": range_ratio,
+            "relative_pos": relative_pos,
+            "is_chop_zone": is_chop_zone,
             "day_open": day_open,
             "day_high": day_high,
             "day_low": day_low,
