@@ -81,13 +81,13 @@ async def websocket_endpoint(websocket: WebSocket, ticker: str = "WDOU26"):
     await manager.connect(websocket)
     try:
         # Enviar snapshot inicial
-        initial_data = get_dashboard_data(ticker)
+        initial_data = await asyncio.to_thread(get_dashboard_data, ticker)
         await websocket.send_json(initial_data)
 
         while True:
-            # Polling em loop com sleep assíncrono de 1s
+            # Polling em loop com sleep assíncrono de 1s (non-blocking)
             await asyncio.sleep(1.0)
-            data = get_dashboard_data(ticker)
+            data = await asyncio.to_thread(get_dashboard_data, ticker)
             await websocket.send_json(data)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
