@@ -32,10 +32,11 @@ export function App() {
     let reconnectTimer: any;
 
     const connectWebSocket = () => {
-      // Determinar URL do WebSocket
+      // Determinar URL do WebSocket dinâmica (suporta ngrok, IP local, localhost e Vite dev)
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const host = window.location.hostname || "localhost";
-      const wsUrl = `${protocol}//${host}:8000/ws/live?ticker=${ticker}`;
+      const host = window.location.host;
+      const wsHost = window.location.port === "5173" ? `${window.location.hostname}:8000` : (host || "localhost:8000");
+      const wsUrl = `${protocol}//${wsHost}/ws/live?ticker=${ticker}`;
 
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
