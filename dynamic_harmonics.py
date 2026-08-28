@@ -1,4 +1,4 @@
-﻿"""
+"""
 dynamic_harmonics.py
 Cálculo Dinâmico e Adaptativo de Harmônicos de Preço e Volatilidade (WDOFUT).
 Calcula o desvio padrão da amplitude (High - Low) dos últimos 45 pregões válidos
@@ -60,7 +60,7 @@ def get_daily_harmonic_step(target_date: date = None, cursor=None, auto_sync=Tru
     SELECT high_p, low_p 
     FROM daily_ohlc 
     WHERE ticker = 'WDOFUT' 
-      AND date < %s 
+      AND date <= %s 
       AND (high_p - low_p) > 2.0
     ORDER BY date DESC 
     LIMIT 45;

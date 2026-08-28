@@ -83,7 +83,7 @@ def sync_daily_ohlc(target_date: date = None) -> int:
             WHERE ticker LIKE 'WDO%%' AND ts >= %s AND ts <= %s;
         """, (d_start, d_end))
         row = cur.fetchone()
-        if not row or row[0] is None or row[2] == 0:
+        if not row or row[0] is None or row[2] < 500:
             continue
 
         raw_min, raw_max, trade_count = row

@@ -109,7 +109,7 @@ class DashboardDataService:
         # 2. Obter Regime de Mercado
         regime_info = get_market_regime(ticker, datetime.combine(ref_date, datetime.min.time()) + timedelta(hours=17))
         regime_name = regime_info.get("regime", "LATERALIDADE_AMPLA")
-        step = regime_info.get("harmonic_step", 26.0)
+        step = regime_info.get("harmonic_step", 15.0)
         is_chop = regime_info.get("is_chop_zone", False)
         relative_pos = regime_info.get("relative_pos", 0.5)
 
